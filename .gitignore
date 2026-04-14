@@ -1,0 +1,50 @@
+# Runtime data directories
+/truedata-nodered/data/
+/truedata-thingsboard/tb-data/
+/truedata-thingsboard/tb-logs/
+/truedata-thingsboard/postgres-data/
+/nodered/
+/tb/
+/postgres-data/
+/src/save/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Trained models and large binaries
+*.pth
+*.pkl
+*.npy
+*.npz
+
+# Data files
+src/data/MCT/data.csv
+src/data/MCT/train_mct.json
+src/data/MCT/test_mct.json
+
+# Archives
+nodered.zip
+tb.zip
+
+# Handover and internal docs
+HANDOVER_*.md
+deploy/2 Manual*.docx
+
+# Database dumps and exports
+/thinkinazul_db_backups/
+/exports/
+
+# Load test reports
+/locust/
+
+# IDE and OS
+/.idea/
+.DS_Store
+
+# Credentials
+src/dataloader/Credenciales*.txt
+
+# Deliverable docs
+docs/Entregable_*.md

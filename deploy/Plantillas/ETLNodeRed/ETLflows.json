@@ -1,0 +1,529 @@
+[
+    {
+        "id": "XXXXXXXXXX1e1eff9f77177413",
+        "type": "http in",
+        "name": "Endpoint",
+        "url": "/endpoint/agregarXXXXXXXXXX",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 180,
+        "y": 260,
+        "wires": [
+            [
+                "XXXXXXXXXXe81af643944dfad5",
+                "XXXXXXXXXXeb6a41241be9a753"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXe81af643944dfad5",
+        "type": "function",
+        "name": "ToNumber",
+        "func": "// Nodo para transformar el valor de Value a número (0 o 1)\nlet val = msg.payload[\"Value\"];\n\nif (typeof val === \"boolean\") {\n    msg.payload[\"Value\"] = val ? 1 : 0;\n} else if (typeof val === \"string\") {\n    let normalized = val.toLowerCase();\n    if (normalized === \"true\" || normalized === \"active\") {\n        msg.payload[\"Value\"] = 1;\n    } else if (normalized === \"false\" || normalized === \"inactive\") {\n        msg.payload[\"Value\"] = 0;\n    }\n}\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 210,
+        "y": 460,
+        "wires": [
+            [
+                "XXXXXXXXXXa978202073e168fa",
+                "XXXXXXXXXX233f5ea6e9564d25",
+                "XXXXXXXXXX4f37e6b97da6238f"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX2324ea0cf87d6a8a",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIANA10ID/telemetry ",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 520,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXa978202073e168fa",
+        "type": "batch",
+        "name": "Batch",
+        "mode": "interval",
+        "count": 10,
+        "overlap": 0,
+        "interval": 10,
+        "allowEmptySequence": false,
+        "topics": [],
+        "x": 520,
+        "y": 340,
+        "wires": [
+            [
+                "XXXXXXXXXXf482463f9f8d99ea"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXf482463f9f8d99ea",
+        "type": "join",
+        "name": "Combine",
+        "mode": "auto",
+        "build": "object",
+        "property": "payload",
+        "propertyType": "msg",
+        "key": "topic",
+        "joiner": "\\n",
+        "joinerType": "str",
+        "accumulate": true,
+        "timeout": "",
+        "count": "",
+        "reduceRight": false,
+        "reduceExp": "",
+        "reduceInit": "",
+        "reduceInitType": "",
+        "reduceFixup": "",
+        "x": 660,
+        "y": 400,
+        "wires": [
+            [
+                "XXXXXXXXXXac24f4b7694c4632"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXac24f4b7694c4632",
+        "type": "function",
+        "name": "Transform",
+        "func": "// Listado de Dispositivos\nvar YYYYYYYYYY \nvar M = ListadoDevices.length;\nvar ctx = {};\nvar TS = [];\n\n// Obtener el payload del mensaje\nvar data = msg.payload;\n\n// Objeto para almacenar los valores y las cantidades para cada nombre\nvar valoresPorNombre = {};\n\n// Recorrer el array de elementos\nfor (var i = 0; i < data.length; i++) {\n    var elemento = data[i];\n    var nombre = elemento.Nombre;\n    var valor = parseFloat(elemento.Valor);\n    var timestamp = parseFloat(elemento.ts);\n    TS.push(timestamp);\n    // Verificar si el nombre ya existe en el objeto\n    if (ctx[nombre]) {\n        // Si existe, agregamos el valor al total y aumentamos la cantidad\n        ctx[nombre].elementos.push(valor);\n        ctx[nombre].timestamps.push(timestamp);\n        ctx[nombre].total += valor;\n        ctx[nombre].cantidad++;\n    } else {\n        // Si no existe, creamos una nueva entrada en el objeto\n        ctx[nombre] = {\n            elementos: [valor],\n            timestamps: [timestamp],\n            total: valor,\n            cantidad: 1\n        };\n    }\n}\nmsg.ctx = ctx;\n\n// Función para calcular la media de los valores de un dispositivo\nfunction calcularMedia(values) {\n    if (values.length === 0) return 0;\n    var suma = values.reduce(function(total, value){return total +\n        value});\n    return suma / values.length;\n}\n\n\n// Función para calcular la mediana de los valores de un dispositivo\nfunction calcularMediana(values) {\n    // Si no hay valores, devolvemos 0\n    if (values.length === 0) return 0;\n\n    // Ordenamos los valores de menor a mayor\n    values.sort(function(a, b) {\n        return a - b;\n    });\n\n    // Calculamos el índice central\n    var mitad = Math.floor(values.length / 2);\n\n    // Si la cantidad de valores es impar, devolvemos el valor en la mitad\n    if (values.length % 2 !== 0) {\n        return values[mitad];\n    } \n    // Si la cantidad de valores es par, devolvemos el promedio de los dos valores centrales\n    else {\n        return (values[mitad - 1] + values[mitad]) / 2;\n    }\n}\n\n\nvar NewMsg = {timestamp:0};\nvar NewMsg2 = {timestamp:0};\n//Bucle de creación de medias\nfor (var j=0; j<M; j++){\n    var deviceName = ListadoDevices[j];\n    if(deviceName in ctx){\n        NewMsg[deviceName] = calcularMedia(ctx[deviceName].elementos);\n        NewMsg2[deviceName] = calcularMediana(ctx[deviceName].elementos);\n    } else {\n        NewMsg[deviceName] = NaN;\n        NewMsg2[deviceName] = NaN;\n    }\n}\n\n\n//Incluimos timestamps minimos y máximos\nvar ts_min = Math.min.apply(Math,TS);\nvar ts_max = Math.max.apply(Math, TS);\n\nNewMsg[\"ts_min\"] = ts_min;\nNewMsg[\"ts_max\"] = ts_max;\nNewMsg[\"timestamp\"] = ts_max;\n\nNewMsg2[\"ts_min\"] = ts_min;\nNewMsg2[\"ts_max\"] = ts_max;\nNewMsg2[\"timestamp\"] = ts_max;\n\n\nmsg.NewmsgMedias = NewMsg;\nmsg.NewmsgMediana = NewMsg2;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 840,
+        "y": 460,
+        "wires": [
+            [
+                "XXXXXXXXXX69c6812e40cd5406",
+                "XXXXXXXXXXc3bdac95956336e4"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX69c6812e40cd5406",
+        "type": "function",
+        "name": "Median",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMediana;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1060,
+        "y": 520,
+        "wires": [
+            [
+                "XXXXXXXXXX2324ea0cf87d6a8a"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXe412ea58c518b925",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIANA5ID/telemetry",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 740,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX233f5ea6e9564d25",
+        "type": "batch",
+        "name": "Batch",
+        "mode": "interval",
+        "count": 10,
+        "overlap": 0,
+        "interval": "5",
+        "allowEmptySequence": false,
+        "topics": [],
+        "x": 520,
+        "y": 560,
+        "wires": [
+            [
+                "XXXXXXXXXXc4456a8a53d06840"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXc4456a8a53d06840",
+        "type": "join",
+        "name": "Combine",
+        "mode": "auto",
+        "build": "object",
+        "property": "payload",
+        "propertyType": "msg",
+        "key": "topic",
+        "joiner": "\\n",
+        "joinerType": "str",
+        "accumulate": true,
+        "timeout": "",
+        "count": "",
+        "reduceRight": false,
+        "reduceExp": "",
+        "reduceInit": "",
+        "reduceInitType": "",
+        "reduceFixup": "",
+        "x": 660,
+        "y": 620,
+        "wires": [
+            [
+                "XXXXXXXXXX9ac4f3ee19c59867"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX9ac4f3ee19c59867",
+        "type": "function",
+        "name": "Transform",
+        "func": "// Listado de Dispositivos\nvar YYYYYYYYYY \nvar M = ListadoDevices.length;\nvar ctx = {};\nvar TS = [];\n\n// Obtener el payload del mensaje\nvar data = msg.payload;\n\n// Objeto para almacenar los valores y las cantidades para cada nombre\nvar valoresPorNombre = {};\n\n// Recorrer el array de elementos\nfor (var i = 0; i < data.length; i++) {\n    var elemento = data[i];\n    var nombre = elemento.Nombre;\n    var valor = parseFloat(elemento.Valor);\n    var timestamp = parseFloat(elemento.ts);\n    TS.push(timestamp);\n    // Verificar si el nombre ya existe en el objeto\n    if (ctx[nombre]) {\n        // Si existe, agregamos el valor al total y aumentamos la cantidad\n        ctx[nombre].elementos.push(valor);\n        ctx[nombre].timestamps.push(timestamp);\n        ctx[nombre].total += valor;\n        ctx[nombre].cantidad++;\n    } else {\n        // Si no existe, creamos una nueva entrada en el objeto\n        ctx[nombre] = {\n            elementos: [valor],\n            timestamps: [timestamp],\n            total: valor,\n            cantidad: 1\n        };\n    }\n}\nmsg.ctx = ctx;\n\n// Función para calcular la media de los valores de un dispositivo\nfunction calcularMedia(values) {\n    if (values.length === 0) return 0;\n    var suma = values.reduce(function(total, value){return total +\n        value});\n    return suma / values.length;\n}\n\n\n// Función para calcular la mediana de los valores de un dispositivo\nfunction calcularMediana(values) {\n    // Si no hay valores, devolvemos 0\n    if (values.length === 0) return 0;\n\n    // Ordenamos los valores de menor a mayor\n    values.sort(function(a, b) {\n        return a - b;\n    });\n\n    // Calculamos el índice central\n    var mitad = Math.floor(values.length / 2);\n\n    // Si la cantidad de valores es impar, devolvemos el valor en la mitad\n    if (values.length % 2 !== 0) {\n        return values[mitad];\n    } \n    // Si la cantidad de valores es par, devolvemos el promedio de los dos valores centrales\n    else {\n        return (values[mitad - 1] + values[mitad]) / 2;\n    }\n}\n\n\nvar NewMsg = {timestamp:0};\nvar NewMsg2 = {timestamp:0};\n//Bucle de creación de medias\nfor (var j=0; j<M; j++){\n    var deviceName = ListadoDevices[j];\n    if(deviceName in ctx){\n        NewMsg[deviceName] = calcularMedia(ctx[deviceName].elementos);\n        NewMsg2[deviceName] = calcularMediana(ctx[deviceName].elementos);\n    } else {\n        NewMsg[deviceName] = NaN;\n        NewMsg2[deviceName] = NaN;\n    }\n}\n\n\n//Incluimos timestamps minimos y máximos\nvar ts_min = Math.min.apply(Math,TS);\nvar ts_max = Math.max.apply(Math, TS);\n\nNewMsg[\"ts_min\"] = ts_min;\nNewMsg[\"ts_max\"] = ts_max;\nNewMsg[\"timestamp\"] = ts_max;\n\nNewMsg2[\"ts_min\"] = ts_min;\nNewMsg2[\"ts_max\"] = ts_max;\nNewMsg2[\"timestamp\"] = ts_max;\n\n\nmsg.NewmsgMedias = NewMsg;\nmsg.NewmsgMediana = NewMsg2;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 840,
+        "y": 680,
+        "wires": [
+            [
+                "XXXXXXXXXXfb7ac5c5a40c6906",
+                "XXXXXXXXXXfb85deb36992d3fb"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXfb7ac5c5a40c6906",
+        "type": "function",
+        "name": "Median",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMediana;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1060,
+        "y": 740,
+        "wires": [
+            [
+                "XXXXXXXXXXe412ea58c518b925"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXc3bdac95956336e4",
+        "type": "function",
+        "name": "Mean",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMedias;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1050,
+        "y": 580,
+        "wires": [
+            [
+                "XXXXXXXXXXb87ce48dce4ca303"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXb87ce48dce4ca303",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIA10ID/telemetry",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXfb85deb36992d3fb",
+        "type": "function",
+        "name": "Mean",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMedias;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1050,
+        "y": 800,
+        "wires": [
+            [
+                "XXXXXXXXXX388b19e88028c72f"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX388b19e88028c72f",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIA5ID/telemetry",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 800,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX4f37e6b97da6238f",
+        "type": "batch",
+        "name": "Batch",
+        "mode": "interval",
+        "count": 10,
+        "overlap": 0,
+        "interval": "1",
+        "allowEmptySequence": false,
+        "honourParts": false,
+        "topics": [],
+        "x": 520,
+        "y": 780,
+        "wires": [
+            [
+                "XXXXXXXXXXe79f9d8ac13c6b55"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXe79f9d8ac13c6b55",
+        "type": "join",
+        "name": "Combine",
+        "mode": "auto",
+        "build": "object",
+        "property": "payload",
+        "propertyType": "msg",
+        "key": "topic",
+        "joiner": "\\n",
+        "joinerType": "str",
+        "useparts": true,
+        "accumulate": true,
+        "timeout": "",
+        "count": "",
+        "reduceRight": false,
+        "reduceExp": "",
+        "reduceInit": "",
+        "reduceInitType": "",
+        "reduceFixup": "",
+        "x": 660,
+        "y": 840,
+        "wires": [
+            [
+                "XXXXXXXXXX07bc6ceec462014c"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX07bc6ceec462014c",
+        "type": "function",
+        "name": "Transform",
+        "func": "// Listado de Dispositivos\nvar YYYYYYYYYY \nvar M = ListadoDevices.length;\nvar ctx = {};\nvar TS = [];\n\n// Obtener el payload del mensaje\nvar data = msg.payload;\n\n// Objeto para almacenar los valores y las cantidades para cada nombre\nvar valoresPorNombre = {};\n\n// Recorrer el array de elementos\nfor (var i = 0; i < data.length; i++) {\n    var elemento = data[i];\n    var nombre = elemento.Nombre;\n    var valor = parseFloat(elemento.Valor);\n    var timestamp = parseFloat(elemento.ts);\n    TS.push(timestamp);\n    // Verificar si el nombre ya existe en el objeto\n    if (ctx[nombre]) {\n        // Si existe, agregamos el valor al total y aumentamos la cantidad\n        ctx[nombre].elementos.push(valor);\n        ctx[nombre].timestamps.push(timestamp);\n        ctx[nombre].total += valor;\n        ctx[nombre].cantidad++;\n    } else {\n        // Si no existe, creamos una nueva entrada en el objeto\n        ctx[nombre] = {\n            elementos: [valor],\n            timestamps: [timestamp],\n            total: valor,\n            cantidad: 1\n        };\n    }\n}\nmsg.ctx = ctx;\n\n// Función para calcular la media de los valores de un dispositivo\nfunction calcularMedia(values) {\n    if (values.length === 0) return 0;\n    var suma = values.reduce(function(total, value){return total +\n        value});\n    return suma / values.length;\n}\n\n\n// Función para calcular la mediana de los valores de un dispositivo\nfunction calcularMediana(values) {\n    // Si no hay valores, devolvemos 0\n    if (values.length === 0) return 0;\n\n    // Ordenamos los valores de menor a mayor\n    values.sort(function(a, b) {\n        return a - b;\n    });\n\n    // Calculamos el índice central\n    var mitad = Math.floor(values.length / 2);\n\n    // Si la cantidad de valores es impar, devolvemos el valor en la mitad\n    if (values.length % 2 !== 0) {\n        return values[mitad];\n    } \n    // Si la cantidad de valores es par, devolvemos el promedio de los dos valores centrales\n    else {\n        return (values[mitad - 1] + values[mitad]) / 2;\n    }\n}\n\n\nvar NewMsg = {timestamp:0};\nvar NewMsg2 = {timestamp:0};\n//Bucle de creación de medias\nfor (var j=0; j<M; j++){\n    var deviceName = ListadoDevices[j];\n    if(deviceName in ctx){\n        NewMsg[deviceName] = calcularMedia(ctx[deviceName].elementos);\n        NewMsg2[deviceName] = calcularMediana(ctx[deviceName].elementos);\n    } else {\n        NewMsg[deviceName] = NaN;\n        NewMsg2[deviceName] = NaN;\n    }\n}\n\n\n//Incluimos timestamps minimos y máximos\nvar ts_min = Math.min.apply(Math,TS);\nvar ts_max = Math.max.apply(Math, TS);\n\nNewMsg[\"ts_min\"] = ts_min;\nNewMsg[\"ts_max\"] = ts_max;\nNewMsg[\"timestamp\"] = ts_max;\n\nNewMsg2[\"ts_min\"] = ts_min;\nNewMsg2[\"ts_max\"] = ts_max;\nNewMsg2[\"timestamp\"] = ts_max;\n\n\nmsg.NewmsgMedias = NewMsg;\nmsg.NewmsgMediana = NewMsg2;\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 840,
+        "y": 900,
+        "wires": [
+            [
+                "XXXXXXXXXX30f284eb23f78ee0",
+                "XXXXXXXXXXbac62c58570dad35"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX30f284eb23f78ee0",
+        "type": "function",
+        "name": "Median",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMediana;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1060,
+        "y": 960,
+        "wires": [
+            [
+                "XXXXXXXXXX8c52df5189d8a64a"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXbac62c58570dad35",
+        "type": "function",
+        "name": "Mean",
+        "func": "// Creamos un nuevo mensaje\nvar Newmsg = {};\n\n// Seleccionamos la información que queremos\nNewmsg.payload = msg.NewmsgMedias;\n\n// Eliminamos los campos no deseados\ndelete Newmsg.payload['ts_min'];\ndelete Newmsg.payload['ts_max'];\n\nreturn Newmsg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1050,
+        "y": 1020,
+        "wires": [
+            [
+                "XXXXXXXXXXb405f827ee655027"
+            ]
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXb405f827ee655027",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIA1ID/telemetry",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 1020,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXX8c52df5189d8a64a",
+        "type": "http request",
+        "name": "HTTP Load",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "ROOT_ThingsBoard/api/v1/IDMEDIANA1ID/telemetry",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [
+            {
+                "keyType": "other",
+                "keyValue": "Content-Type",
+                "valueType": "other",
+                "valueValue": "application/json"
+            }
+        ],
+        "x": 1310,
+        "y": 960,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "XXXXXXXXXXeb6a41241be9a753",
+        "type": "http response",
+        "name": "",
+        "statusCode": "200",
+        "headers": {},
+        "x": 360,
+        "y": 160,
+        "wires": []
+    }
+]

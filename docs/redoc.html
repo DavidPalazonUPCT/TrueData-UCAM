@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>ThingsBoard API Documentation (ReDoc)</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        #redoc-container {
+            min-height: 100vh;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="redoc-container">Cargando documentación...</div>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@2.1.3/bundles/redoc.standalone.js"> </script>
+    <script>
+        const spec = { "openapi": "3.0.0", "info": { "title": "ThingsBoard Device Telemetry & Attributes API", "description": "This API documentation explains how to send data (telemetry and attributes) to devices created in ThingsBoard.\n\nIn the FlowGuard project, devices are created during the deployment process (`deploy/1_Configuracion_General.py`). \nEach device is assigned a unique **Access Token** which is used to authenticate the requests.\n\nYou can find the Access Tokens for your devices in the following location:\n`deploy/{Customer}/DeviceimportCredentials_{Customer}.csv`\n\nExample (for ESAMUR): `deploy/ESAMUR/DeviceimportCredentials_ESAMUR.csv`\n", "version": "1.0.0" }, "servers": [{ "url": "http://localhost:9090", "description": "Local ThingsBoard Instance" }], "paths": { "/api/v1/{access_token}/telemetry": { "post": { "summary": "Send Telemetry", "description": "Sends time-series data to a specific device.", "parameters": [{ "name": "access_token", "in": "path", "required": true, "description": "The Access Token of the device.", "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } }, "example": { "temperature": 25.5, "humidity": 60, "status": "active" } } } }, "responses": { "200": { "description": "Telemetry data accepted." }, "401": { "description": "Invalid Access Token." }, "400": { "description": "Invalid JSON format." } } } }, "/api/v1/{access_token}/attributes": { "post": { "summary": "Send Attributes", "description": "Sends client-side attributes to a specific device.", "parameters": [{ "name": "access_token", "in": "path", "required": true, "description": "The Access Token of the device.", "schema": { "type": "string" } }], "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }] } }, "example": { "version": "v1.2.3", "location": "Building A", "frequency": 5 } } } }, "responses": { "200": { "description": "Attributes accepted." }, "401": { "description": "Invalid Access Token." } } } } } };
+
+        window.onload = () => {
+            try {
+                if (typeof Redoc === 'undefined') {
+                    document.getElementById('redoc-container').innerHTML = '<p style="color:red; padding: 20px;">Error: No se pudo cargar la librería ReDoc desde el CDN. Por favor, verifica tu conexión a internet.</p>';
+                } else {
+                    Redoc.init(spec, {}, document.getElementById('redoc-container'));
+                }
+            } catch (err) {
+                console.error('ReDoc Init Error:', err);
+                document.getElementById('redoc-container').innerHTML = '<p style="color:red; padding: 20px;">Error al inicializar ReDoc: ' + err.message + '</p>';
+            }
+        };
+    </script>
+</body>
+
+</html>

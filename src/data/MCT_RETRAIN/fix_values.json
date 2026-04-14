@@ -1,0 +1,155 @@
+{
+    "PUERTO.PLC11.CLORO_PLC11": {
+        "0": 1.1305077821235692
+    },
+    "PUERTO.PLC11.TURBIDEZ_PLC11": {
+        "0": 0.07842897705602038
+    },
+    "PUERTO.PLC12.OZONO_POWER_CONVERTER": {
+        "0": 38.65541542080935
+    },
+    "PUERTO.PLC1A.CNSG_Q_SAL_BALSON": {
+        "0": 440.81886506421
+    },
+    "PUERTO.PLC1B.Q_ENT_PLANTA": {
+        "0": 1786.0530070133482
+    },
+    "PUERTO.PLC1B.VRE_REGU": {
+        "0": 32.20272874364095
+    },
+    "PUERTO.PLC1B.VRE_REGU_1": {
+        "0": 32.20272874364095
+    },
+    "PUERTO.PLC2.Q_DEC1_VALOR": {
+        "0": 897.9782540086209
+    },
+    "PUERTO.PLC2.Q_DEC2_VALOR": {
+        "0": 4.258415229155135
+    },
+    "PUERTO.PLC2.Q_DEC3_VALOR": {
+        "0": 920.864122006497
+    },
+    "PUERTO.PLC3.CLORO_DECL1": {
+        "0": 1.2716172485882473
+    },
+    "PUERTO.PLC3.MRAD1_TELEM": {
+        "0": 0.018649330204218474
+    },
+    "PUERTO.PLC3.MRAD2_TELEM": {
+        "0": 0.0
+    },
+    "PUERTO.PLC3.MRAD3_TELEM": {
+        "0": 0.0
+    },
+    "PUERTO.PLC3.MRTD1_TELEM": {
+        "0": 2.915324402722913e-06
+    },
+    "PUERTO.PLC3.MRTD2_TELEM": {
+        "0": 0.0
+    },
+    "PUERTO.PLC3.MRTD3_TELEM": {
+        "0": 5.830648805445826e-06
+    },
+    "PUERTO.PLC3.PHL1": {
+        "0": 7.530379816808223
+    },
+    "PUERTO.PLC3.PH_PLC2": {
+        "0": 8.198181124546611
+    },
+    "PUERTO.PLC3.TURBIDEZL1": {
+        "0": 0.9968710780404823
+    },
+    "PUERTO.PLC3.VPFD1_TELEM": {
+        "0": 0.00021864933020421847
+    },
+    "PUERTO.PLC3.VPFD2_TELEM": {
+        "0": 0.0
+    },
+    "PUERTO.PLC3.VPFD3_TELEM": {
+        "0": 0.00020990335699604975
+    },
+    "PUERTO.PLC4.CONDUCTIVIDAD": {
+        "0": 927.4815558998081
+    },
+    "PUERTO.PLC5A.F1_PASO_0": {
+        "0": 0.0
+    },
+    "PUERTO.PLC5A.F1_PASO_1": {
+        "0": 0.9923122895500197
+    },
+    "PUERTO.PLC5A.F2_PASO_0": {
+        "0": 1.4576622013614564e-05
+    },
+    "PUERTO.PLC5A.F2_PASO_1": {
+        "0": 0.9883299564159002
+    },
+    "PUERTO.PLC5A.F3_PASO_0": {
+        "0": 4.081454163812078e-05
+    },
+    "PUERTO.PLC5A.F3_PASO_1": {
+        "0": 0.9938603268078655
+    },
+    "PUERTO.PLC5A.F4_PASO_0": {
+        "0": 6.413713685990409e-05
+    },
+    "PUERTO.PLC5A.F4_PASO_1": {
+        "0": 0.9931839715464338
+    },
+    "PUERTO.PLC5A.F5_PASO_0": {
+        "0": 0.00016908881535792895
+    },
+    "PUERTO.PLC5A.F5_PASO_1": {
+        "0": 0.9929274229989942
+    },
+    "PUERTO.PLC5A.F6_PASO_0": {
+        "0": 0.0006267947465854263
+    },
+    "PUERTO.PLC5A.F6_PASO_1": {
+        "0": 0.9915572205297144
+    },
+    "PUERTO.PLC5B.F10_PASO_0": {
+        "0": 1.7491946416337477e-05
+    },
+    "PUERTO.PLC5B.F10_PASO_1": {
+        "0": 0.6769966328003149
+    },
+    "PUERTO.PLC5B.F11_PASO_0": {
+        "0": 0.000434383336005714
+    },
+    "PUERTO.PLC5B.F11_PASO_1": {
+        "0": 0.9546375522936315
+    },
+    "PUERTO.PLC5B.F12_PASO_0": {
+        "0": 6.99677856653499e-05
+    },
+    "PUERTO.PLC5B.F12_PASO_1": {
+        "0": 0.9574479250178564
+    },
+    "PUERTO.PLC5B.F7_PASO_0": {
+        "0": 0.00010495167849802487
+    },
+    "PUERTO.PLC5B.F7_PASO_1": {
+        "0": 0.9490051455475708
+    },
+    "PUERTO.PLC5B.F8_PASO_0": {
+        "0": 0.0
+    },
+    "PUERTO.PLC5B.F8_PASO_1": {
+        "0": 0.0
+    },
+    "PUERTO.PLC5B.F9_PASO_0": {
+        "0": 1.4576622013614564e-05
+    },
+    "PUERTO.PLC5B.F9_PASO_1": {
+        "0": 0.9493316618806757
+    },
+    "PUERTO.PLC7.TURBIDEZ_PLC2": {
+        "0": 61.64112168563089
+    },
+    "PUERTO.PLC9.DOSIFICACION_CLORO_POST": {
+        "0": 1.2000000476837158
+    },
+    "PUERTO.PLC9.DOSIFICACION_CLORO_PRE": {
+        "0": 2.4917064011758137
+    }
+}

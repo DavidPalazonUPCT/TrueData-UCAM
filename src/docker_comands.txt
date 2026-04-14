@@ -1,0 +1,24 @@
+# Dockerfile
+docker build -f Dockerfile . --tag flowguard-cognn:v1
+docker run --gpus all -v /home/jesuspardo/Flowguard-compose/src/data:/app/data -v /home/jesuspardo/Flowguard-compose/src/dataloader:/app/dataloader -v /home/jesuspardo/Flowguard-compose/src/save:/app/save -e AWS_ACCESS_KEY_ID=<AWS-ACCESS> -e AWS_SECRET_ACCESS_KEY=<AWS-SECRET> -e WANDB_KEY=<WANDB-KEY> -e WANDB_RUN=true -e MODEL=cognn -e CLIENT='MCT' -e TASK=train flowguard-cognn:v1 --save /app/save/ --data /app/data/MCT
+
+# Dockerfile TrainPipeline
+docker build -f DockerfileTrainPipeline . --tag flowguard-compose-retrain:v1
+docker run --gpus all -v /home/jesuspardo/Flowguard-compose/src/data:/app/data -v /home/jesuspardo/Flowguard-compose/src/dataloader:/app/dataloader -v /home/jesuspardo/Flowguard-compose/src/models:/app/models -e AWS_ACCESS_KEY_ID=<AWS-ACCESS> -e AWS_SECRET_ACCESS_KEY=<AWS-SECRET> -e WANDB_KEY=<WANDB-KEY> -e WANDB_RUN=true -e MODEL=cognn -e CLIENT='MCT_RETRAIN' -e TASK=re-train flowguard-compose-retrain:v1 --save /app/save/ --data /app/data/MCT_RETRAIN
+
+# DockerfileInference
+docker build -f DockerfileInference . --tag flowguard-cognn-inference:v1
+docker run -p 5000:5000 --rm -v /home/jesuspardo/Flowguard-compose/src:/app -e AWS_ACCESS_KEY_ID=<AWS-ACCESS> -e AWS_SECRET_ACCESS_KEY=<AWS-SECRET> -e AWS_DEFAULT_REGION=eu-west-1 -e MODEL=cognn -e CLIENT='WADI' -e TASK=inference flowguard-cognn-inference:v1 --device 'cpu' --scaling_required False --scaler_path 'scale_params.csv' --model_path 'local' --N 12 --Nulo 0 --Metodo MEDIANA10
+
+# DockerfileInferenceCPU
+docker build -f DockerfileInferenceCPU . --tag flowguard-cognn-inference-cpu:v1
+docker run -p 5000:5000 --rm -v /home/jesuspardo/Flowguard-compose/src:/app -e AWS_ACCESS_KEY_ID=<AWS-ACCESS> -e AWS_SECRET_ACCESS_KEY=<AWS-SECRET> -e AWS_DEFAULT_REGION=eu-west-1 -e MODEL=cognn -e CLIENT='WADI' -e TASK=inference flowguard-cognn-inference-cpu:v1 --device 'cpu' --scaling_required False --scaler_path 'scale_params.csv' --model_path 'local' --N 12 --Nulo 0 --Metodo MEDIANA10
+docker run -p 5000:5000 --rm -v /home/jesuspardo/Flowguard-compose/src:/app -e AWS_ACCESS_KEY_ID=X -e AWS_SECRET_ACCESS_KEY=X -e AWS_DEFAULT_REGION=X -e MODEL=cognn -e CLIENT='WADI' -e ROOT='http://portal.airtrace.io:8080' -e TASK=inference flowguard-cognn-inference-cpu:v1 --device 'cpu' --scaling_required False --scaler_path 'scale_params.csv' --model_path 'local' --N 12 --Nulo 0 --Metodo MEDIANA10
+
+# Ejecutar inferencia extrayendo datos de ETL
+MODEL='cognn' CLIENT='WADI' ROOT='http://localhost:9090' curl -X POST http://localhost:5000/secure-trigger -u admin:secret
+
+# Configurar crontab
+crontab -e
+* * * * * MODEL='cognn' CLIENT='MCT' ROOT='http://localhost:9090' /usr/bin/python3 /home/jesus/INFERENCE_compose/src/dataloader/inference_ETL.py
+

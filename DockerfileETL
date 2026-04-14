@@ -1,0 +1,21 @@
+# Step 1: Base image with Python
+FROM python:3.9-slim
+
+# Step 2: Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-pip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Step 3: Install Python packages
+RUN pip install requests pandas flask boto3
+
+# Step 4: Copiar el código del script al contenedor
+COPY ./src /app
+
+# Step 5: Set working directory
+WORKDIR /app
+
+# Step 6: Entrypoint para ejecutar el script de ETL
+ENTRYPOINT ["python", "dataloader/inference_ETL.py"]

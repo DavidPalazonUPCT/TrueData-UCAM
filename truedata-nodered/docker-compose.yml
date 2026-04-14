@@ -1,0 +1,21 @@
+services:
+  # Servicio Node-RED
+  nodered_tb:
+    restart: always
+    image: nodered/node-red:3.1.9
+    ports:
+      - "1880:1880"
+    volumes:
+      - ./data:/data
+      - ./settings.js:/data/settings.js:ro
+    environment:
+      - TZ=Europe/Madrid
+    networks:
+      iot_network:
+        ipv4_address: 172.25.0.3
+    user: "0:0"                               # Ejecuta el contenedor como root
+
+networks:
+  iot_network:
+    external: true                       # Esto le dice a Docker que la red ya existe
+    name: flowguard-compose_iot_network  # Usa el nombre de la red que ya existe

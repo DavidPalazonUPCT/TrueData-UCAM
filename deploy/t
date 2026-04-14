@@ -1,0 +1,3 @@
+curl -X POST "https://api-gateways.eliotrade.com/api/v1/ibkr/e2d44ca8-0fd2-4d7c-aba0-83c2e41a53c8/v1/api/iserver/auth/status" \
+  -H "X-API-Key: gTFjSds5ZOmGDzLbXbTouZF5gDf3JcdKuuncqyXpnOOLY6oaMTJAwOwuMbgQJIfS6HTrvJsX2x9JQtM3zdjEGmLGIo2YdGfxmJTusdWcvPO9J0pHWduxkm1LxTFvqKsz" \
+  -H "Content-Type: application/json"

@@ -1,0 +1,47 @@
+services:
+  # Servicio ThingsBoard
+  thingsboard:
+    restart: always
+    image: thingsboard/tb-postgres:4.1.0
+    ports:
+      - "9090:9090"                           # Acceso a ThingsBoard en el puerto 9090
+      - "1883:1883"
+      - "7070:7070"
+      - "5683-5688:5683-5688/udp"
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5433
+      DATABASE_TYPE: postgresql
+      DATABASE_NAME: thingsboard
+      DATABASE_USER: tenant@thingsboard.org
+      DATABASE_PASSWORD: tenant
+    volumes:
+      - ./tb-data:/data
+      - ./tb-logs:/var/log/thingsboard
+    depends_on:
+      - db
+    networks:
+      iot_network:
+        ipv4_address: 172.25.0.2
+
+  # Servicio de ThingsBoard db
+  db:
+    image: "postgres:13"
+    container_name: postgres-db
+    restart: always
+    environment:
+      POSTGRES_USER: thingsboard
+      POSTGRES_PASSWORD: thingsboard_password
+      POSTGRES_DB: thingsboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    networks:
+      iot_network:
+        ipv4_address: 172.25.0.23
+
+networks:
+  iot_network:
+    external: true                       # Esto le dice a Docker que la red ya existe
+    name: flowguard-compose_iot_network  # Usa el nombre de la red que ya existe
