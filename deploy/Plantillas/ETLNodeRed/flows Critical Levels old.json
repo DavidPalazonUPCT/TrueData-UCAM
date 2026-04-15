@@ -277,7 +277,7 @@
         "type": "function",
         "z": "73f10ad0ba7a340b",
         "name": "Definir Manual URL",
-        "func": "//HAY QUE DEFINIR LA LOGICA PARA EXTRAER LA URL EN FUNCION DEL CLIENTE Y MODELO\n//POR AHORA SOLO SE HA INCLUIDO PARA MCT y MODELO M2\n//msg.payload['URL']=\"ROOT_ThingsBoard/api/v1/2rZbP1mTKGm6cdCx4bDW/telemetry\";\n\nif (msg.payload[\"cliente\"] == \"MCT\" && msg.payload[\"modelo\"] == \"M2\") {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/2rZbP1mTKGm6cdCx4bDW/telemetry\";\n} else if (msg.payload[\"cliente\"] == \"MCT\" && msg.payload[\"modelo\"] == \"M3\") {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/1DyXZfNEgoBK7U31WO4w/telemetry\";\n} else {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/accessTokenClientesNiveles/telemetry\";\n}\n\n//const rendered = mustache.render(m,data)\nreturn msg;",
+        "func": "//HAY QUE DEFINIR LA LOGICA PARA EXTRAER LA URL EN FUNCION DEL CLIENTE Y MODELO\n//POR AHORA SOLO SE HA INCLUIDO PARA MCT y MODELO M2\n//msg.payload['URL']=\"ROOT_ThingsBoard/api/v1/accessTokenMCTM2/telemetry\";\n\nif (msg.payload[\"cliente\"] == \"MCT\" && msg.payload[\"modelo\"] == \"M2\") {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/accessTokenMCTM2/telemetry\";\n} else if (msg.payload[\"cliente\"] == \"MCT\" && msg.payload[\"modelo\"] == \"M3\") {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/accessTokenMCTM3/telemetry\";\n} else {\n    msg.URL =\"ROOT_ThingsBoard/api/v1/accessTokenClientesNiveles/telemetry\";\n}\n\n//const rendered = mustache.render(m,data)\nreturn msg;",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
