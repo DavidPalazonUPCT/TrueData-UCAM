@@ -46,7 +46,7 @@ ROOT=http://18.185.1.118:9090 python3 fetch_tokens_remote.py
 ### 3. Lanzar el simulador
 
 ```bash
-ROOT=http://18.185.1.118:9090 python3 src/dataloader/simulador_sensores.py --client ESAMUR
+ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR
 ```
 
 **Resultado**: ✅ Inyección funcionando. Los datos llegan a ThingsBoard en `18.185.1.118` y son visibles en los dashboards.
@@ -60,10 +60,10 @@ ROOT=http://18.185.1.118:9090 python3 src/dataloader/simulador_sensores.py --cli
 ROOT=http://18.185.1.118:9090 python3 fetch_tokens_remote.py
 
 # 2. Lanzar el inyector
-ROOT=http://18.185.1.118:9090 python3 src/dataloader/simulador_sensores.py --client ESAMUR
+ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR
 
 # Opcional: limitar filas o ajustar velocidad
-ROOT=http://18.185.1.118:9090 python3 src/dataloader/simulador_sensores.py --client ESAMUR --delay 0.5 --limit 100
+ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR --delay 0.5 --limit 100
 ```
 
 > [!IMPORTANT]

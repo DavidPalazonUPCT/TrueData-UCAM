@@ -3,7 +3,7 @@
 Este simulador permite inyectar datos históricos en ThingsBoard como si fueran lecturas de sensores en tiempo real. Es la herramienta principal para validar que los flujos de Node-RED, el motor de inferencia y los dashboards funcionan correctamente.
 
 ## Ubicación del Script
-El script se encuentra en: `src/dataloader/simulador_sensores.py`
+El script se encuentra en: `simulator/simulador_sensores.py`
 
 ---
 
@@ -27,7 +27,7 @@ El simulador realiza los siguientes pasos de forma automática:
 ### Uso Básico (ESAMUR)
 Para simular el flujo de datos de ESAMUR con el intervalo por defecto (1 segundo):
 ```bash
-python3 src/dataloader/simulador_sensores.py --client ESAMUR
+python3 simulator/simulador_sensores.py --client ESAMUR
 ```
 
 ### Parámetros Disponibles
@@ -40,7 +40,7 @@ python3 src/dataloader/simulador_sensores.py --client ESAMUR
 ### Ejemplo: Simulación Lenta (Prueba de Dashboards)
 Para inyectar solo 10 filas con un intervalo de 5 segundos entre ellas:
 ```bash
-python3 src/dataloader/simulador_sensores.py --client ESAMUR --delay 5 --limit 10
+python3 simulator/simulador_sensores.py --client ESAMUR --delay 5 --limit 10
 ```
 
 ---
@@ -53,4 +53,4 @@ Para confirmar que el simulador está funcionando:
 
 > [!TIP]
 > Si ThingsBoard no está en `localhost:9090`, puedes definir la URL base usando la variable de entorno `ROOT`:
-> `export ROOT=http://mi-ip-servidor:9090 && python3 src/dataloader/simulador_sensores.py`
+> `export ROOT=http://mi-ip-servidor:9090 && python3 simulator/simulador_sensores.py`
