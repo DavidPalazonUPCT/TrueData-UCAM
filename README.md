@@ -1,55 +1,48 @@
+# TrueData UCAM — Base Module
 
-# FlowGuard Compose
+UCAM's base-module contribution to the TRUEDATA project: ThingsBoard for
+device/telemetry management, Node-RED for ETL aggregation, a Python deploy
+pipeline for client provisioning, and a sensor simulator for DEMO mode.
 
-This repository contains the inference code for the FlowGuard project. Node-RED and ThingsBoard have been separated into their own directories for independent deployment.
+This is UCAM's source repo. Production code is contributed to the TRUEDATA
+GitLab monorepo via Merge Requests; the contribution roadmap lives at
+`docs/superpowers/plans/2026-04-14-truedata-gitlab-base-contribution.md`.
 
 ## Service Architecture
 
-The system is split across three docker-compose files sharing the external network `flowguard-compose_iot_network` (172.25.0.0/24):
+Services share an external Docker network `truedata_iot_network`
+(subnet `172.25.0.0/24`):
 
 | Directory | Services | IP | Port |
 |---|---|---|---|
 | `truedata-thingsboard/` | ThingsBoard + PostgreSQL | 172.25.0.2, 172.25.0.23 | 9090, 1883, 7070, 5432 |
-| `truedata-nodered/` | Node-RED | 172.25.0.3 | 1880 |
-| `.` (root) | Inference Service | 172.25.0.4 | 5000 |
+| `truedata-nodered/`     | Node-RED                 | 172.25.0.3              | 1880 |
 
-For detailed guides on each service, see:
-- [Node-RED Guide](truedata-nodered/README.md)
-- [ThingsBoard Guide](truedata-thingsboard/README.md)
+Detailed module guides:
+- [ThingsBoard guide](truedata-thingsboard/README.md)
+- [Node-RED guide](truedata-nodered/README.md)
 
 ## Project structure
 
 ```
-deploy/
-images/
-src/
-   aggregation_files/
-   data/
-   dataloader/
-   models/
-   utils/
-   config.json
-   inference.py
-   run.py
-truedata-nodered/
-   docker-compose.yml
-   settings.js
-   README.md
-truedata-thingsboard/
-   docker-compose.yml
-   README.md
-DockerfileInferenceCPU
-docker-compose.yml
+deploy/                  Python deploy pipeline (provision a TB+Node-RED client)
+truedata-thingsboard/    ThingsBoard service definition
+truedata-nodered/        Node-RED service definition + settings.js
+simulator/               simulador_sensores.py — DEMO injector for ThingsBoard
+system_sizing/           INCIBE sizing calculator
+fetch_tokens_remote.py   Operational tool: regenerate TB device access tokens
+DockerfileEnvClient      Container image for `deploy/env_client.py`
+INJECTION_SETUP.md       Simulator runbook (remote-TB injection flow)
+SIMULATION_GUIDE.md      Simulator usage reference
+DEPLOYMENT_GUIDE.md      Step-by-step deployment guide (Spanish)
 ```
 
 ## Setup and Deployment
 
-### Step 0: Create network.
-
-First, create the external network shared by all services.
+### Step 0: Create the shared network.
 
 ```sh
-docker network create --driver=bridge --subnet=172.25.0.0/24 flowguard-compose_iot_network
+docker network create --driver=bridge --subnet=172.25.0.0/24 truedata_iot_network
 ```
 
 ### Step 1: Start ThingsBoard (must be first).
@@ -59,16 +52,15 @@ cd truedata-thingsboard
 docker compose up -d
 ```
 
-Wait for ThingsBoard to be ready (check `http://localhost:9090`).
-
-If you get a permissions error in `tb-data/db`:
+Wait until `http://localhost:9090` responds (first boot can take 3–5 min
+while the DB initializes). If you hit permissions errors in `tb-data/db`:
 
 ```sh
 sudo chmod -R 777 tb-data
 sudo chmod 750 tb-data/db
 ```
 
-Then restart: `docker compose up -d`
+Then restart: `docker compose up -d`.
 
 ### Step 2: Start Node-RED.
 
@@ -77,89 +69,47 @@ cd truedata-nodered
 docker compose up -d
 ```
 
-The `settings.js` file is automatically mounted into the container. No manual copy needed.
+`settings.js` is mounted automatically via volume. Check `http://localhost:1880`.
 
-Check `http://localhost:1880` is accessible.
+### Step 3: Provision a client.
 
-### Step 3: Start the Inference Service.
-
-From the project root:
+`deploy/Client.json` carries the client name and model. Configure the URLs in
+the scripts under `deploy/`, then run the master script:
 
 ```sh
-docker compose up --build -d
+python3 deploy/env_client.py
 ```
 
-### Step 4: Configure Nodered and Thingsboard.
+It chains the numbered scripts:
 
-Make sure that "Client.json" (inside "/deploy" folder) has the name of the client and 
-the model that we are going to use. Check the urls in the scripts inside deploy folder. 
-Run the following scripts:
-- Deploy the aggregation flows in Nodered:
-   ```sh
-   python3 deploy/1_Configuracion_General.py
-   ```
-- Send the values of the critical levels to Thingsboard (bucket):
-   ```sh
-   python3 deploy/1.1_Subir_Niveles_Criticidad_Inicial_Bulk.py
-   ```
-- Create buckets of the devices in Thingsboard:
-   ```sh
-   python3 deploy/2_Crear_Entorno_Cliente_ThingsBoard.py
-   ```
-- Deploy the flows for this client in Nodered:
-   ```sh
-   python3 deploy/2.2_Crear_ETL_NodeRed_Cliente.py
-   ```
+| Script | Purpose |
+|---|---|
+| `1_Configuracion_General.py`                   | General config + base aggregation flows |
+| `1.1_Subir_Niveles_Criticidad_Inicial_Bulk.py` | Initial criticality levels (bulk) |
+| `2_Crear_Entorno_Cliente_ThingsBoard.py`       | Devices + buckets in TB |
+| `2.2_Crear_ETL_NodeRed_Cliente.py`             | Per-client ETL flows in Node-RED |
+| `3_Solicitar_Niveles_Criticidad.py`            | Inspect criticality levels (read) |
+| `3.1_Modificar_Niveles_Criticidad.py`          | Modify criticality levels |
+| `4_Subir_thresholds.py`                        | Upload model thresholds *(see note)* |
 
-- Deploy all with 1 script:
-    ```sh
-   python3 deploy/env_client.py
-   ```  
-  
-- **Error sending flows to nodered:**
+> [!NOTE]
+> `4_Subir_thresholds.py` reads CSV inputs from a path that previously lived
+> under `src/models/` (no longer in this repo, since training/inference is
+> out of UCAM's base-module scope). Until the input location is refactored
+> to a base-owned path, that step requires the CSVs to be made available
+> externally.
 
-If you run the scripts in the container environment you have to use the functions 
-"crear_flow_nodered" and "update_flow_nodered" without the TOKEN variable. You just have to 
-change last lines in scripts "1_Configuracion_General.py" and "2.2_Crear_ETL_NodeRed_Cliente.py".
+### Step 4 (DEMO): Run the simulator.
 
-### Optional: Modify critical levels
-- Get critical levels:
-   ```sh
-   python3 deploy/3_Solicitar_Niveles_Criticidad.py
-   ```
-- Modify values of the critical levels. {MODEL, LEVEL, VALUE} are environment variables That specify the model, 
-the critical level that you want to modify and the new value that you want to set for that critical level. 
-   ```sh
-   MODEL='M3' LEVEL=<LEVEL> VALUE=<VALUE> python3 /deploy/3.1_Modificar_Niveles_Criticidad.py
-   ```
+```sh
+python3 simulator/simulador_sensores.py --client ESAMUR
+```
 
-## Execute inference periodically
+See `SIMULATION_GUIDE.md` and `INJECTION_SETUP.md`.
 
-Now we are going to run a python script that will do the inference each minute.
+## Scope
 
-   ```sh
-   MODEL='cognn' CLIENT='MCT' ROOT='http://localhost:9090' python3 src/dataloader/inference_ETL.py
-   ```
-To run it on background:
-- Find inference process
-    ```sh
-   ps aux | grep inference_ETL.py
-    ```
-
-- Stop inference process
-    ```sh
-   kill -9 <PID>
-    ```
-
-- Run it on background
-    ```sh
-   nohup env MODEL="cognn" CLIENT="MCT" ROOT="http://3.66.4.174:9090" python3 src/dataloader/inference_ETL.py > output_log 2>&1 &
-    ```
-
-(CLIENT variable is the name of the client, and MODEL can be {stgnn-gat, cognn})
-
-
-
-
-
-
+This repo holds UCAM's base-module work: TB, Node-RED, deploy pipeline,
+simulator, INCIBE sizing calculator. Training/inference (CoGNN/STGNN) was
+previously vendored here but is now out of scope; see the
+`baseline-pre-contribution` tag for the historical state with ML included.
