@@ -44,4 +44,4 @@ services:
 networks:
   iot_network:
     external: true                       # Esto le dice a Docker que la red ya existe
-    name: flowguard-compose_iot_network  # Usa el nombre de la red que ya existe
+    name: truedata_iot_network  # Usa el nombre de la red que ya existe

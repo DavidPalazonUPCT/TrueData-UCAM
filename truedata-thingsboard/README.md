@@ -1,7 +1,7 @@
 
-# FlowGuard - Guia de ThingsBoard
+# TrueData - Guia de ThingsBoard
 
-Guia de uso de ThingsBoard dentro del ecosistema FlowGuard para la gestion de dispositivos IoT, telemetria y deteccion de anomalias en sistemas de control industrial.
+Guia de uso de ThingsBoard dentro del ecosistema TrueData para la gestion de dispositivos IoT, telemetria y deteccion de anomalias en sistemas de control industrial.
 
 ## Arquitectura
 
@@ -18,7 +18,7 @@ Guia de uso de ThingsBoard dentro del ecosistema FlowGuard para la gestion de di
                            +------------------+
 ```
 
-Todos los servicios se comunican a traves de la red Docker `flowguard-compose_iot_network` (subnet `172.25.0.0/24`).
+Todos los servicios se comunican a traves de la red Docker `truedata_iot_network` (subnet `172.25.0.0/24`).
 
 ---
 
@@ -31,7 +31,7 @@ Todos los servicios se comunican a traves de la red Docker `flowguard-compose_io
 | `thingsboard` | `thingsboard/tb-postgres:4.1.0` | 9090, 1883, 7070, 5683-5688/udp | 172.25.0.2 | Plataforma IoT principal |
 | `db` | `postgres:13` | 5432 | 172.25.0.23 | Base de datos de ThingsBoard |
 | `nodered_tb` | `nodered/node-red:3.1.9` | 1880 | 172.25.0.3 | Orquestacion de flujos ETL |
-| `inference-service` | `flowguard-stgnn-inference-cpu:v1` | 5000 | 172.25.0.4 | API de deteccion de anomalias |
+| `inference-service` | `truedata-stgnn-inference-cpu:v1` | 5000 | 172.25.0.4 | API de deteccion de anomalias |
 
 ### Variables de entorno de ThingsBoard
 
@@ -265,8 +265,8 @@ python3 deploy/env_client.py
 ### Opcion 3: Contenedor Docker
 
 ```sh
-docker build -f DockerfileEnvClient . --tag flowguard-env-client:v1
-docker run --rm --network flowguard-compose_iot_network flowguard-env-client:v1
+docker build -f DockerfileEnvClient . --tag truedata-env-client:v1
+docker run --rm --network truedata_iot_network truedata-env-client:v1
 ```
 
 > **Nota:** Si se ejecutan los scripts desde dentro de un contenedor Docker, las funciones `crear_flow_nodered` y `update_flow_nodered` deben llamarse sin el parametro TOKEN (usar autenticacion basica en su lugar).
@@ -381,7 +381,7 @@ Cada cliente tiene en su directorio:
 | Error de permisos en `tb-data/` | `sudo chmod -R 777 tb-data` |
 | Error en `tb-data/db` | `sudo chmod 750 tb-data/db` |
 | ThingsBoard no arranca | Verificar PostgreSQL: `docker logs postgres-db` |
-| Error de red entre servicios | Verificar red: `docker network ls \| grep flowguard` |
+| Error de red entre servicios | Verificar red: `docker network ls \| grep truedata` |
 | Error enviando flujos a Node-RED desde contenedor | Usar autenticacion basica (sin TOKEN) |
 | Inference no conecta a ThingsBoard | Verificar `ROOT=http://172.25.0.2:9090` |
 | Token expirado | Re-ejecutar `extract_token()` para obtener nuevo token |

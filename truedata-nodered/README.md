@@ -1,7 +1,7 @@
 
-# FlowGuard - Guia de Node-RED
+# TrueData - Guia de Node-RED
 
-Guia de uso de Node-RED dentro del ecosistema FlowGuard para la orquestacion de flujos ETL, agregacion de datos de sensores y comunicacion con ThingsBoard.
+Guia de uso de Node-RED dentro del ecosistema TrueData para la orquestacion de flujos ETL, agregacion de datos de sensores y comunicacion con ThingsBoard.
 
 ## Arquitectura
 
@@ -59,7 +59,7 @@ nodered_tb:
 ### Red Docker
 
 ```
-Red: flowguard-compose_iot_network (172.25.0.0/24)
+Red: truedata_iot_network (172.25.0.0/24)
 
 Node-RED (172.25.0.3) ---HTTP---> ThingsBoard (172.25.0.2:9090)
 Node-RED (172.25.0.3) ---HTTP---> Inference Service (172.25.0.4:5000)
@@ -68,7 +68,7 @@ Node-RED (172.25.0.3) ---HTTP---> Inference Service (172.25.0.4:5000)
 La red debe crearse antes de levantar los servicios:
 
 ```sh
-docker network create --driver=bridge --subnet=172.25.0.0/24 flowguard-compose_iot_network
+docker network create --driver=bridge --subnet=172.25.0.0/24 truedata_iot_network
 ```
 
 ---
@@ -258,7 +258,7 @@ requests.post("http://localhost:1880/flows", auth=(...), json=flows_actuales)
 
 ---
 
-## Flujos desplegados en FlowGuard
+## Flujos desplegados en TrueData
 
 ### 1. Critical Level (Niveles de Criticidad)
 
@@ -379,7 +379,7 @@ POST /endpoint/previo{Cliente}
 
 ## Tipos de nodos utilizados
 
-| Tipo de nodo | Uso en FlowGuard |
+| Tipo de nodo | Uso en TrueData |
 |---|---|
 | `http in` | Endpoints HTTP que reciben datos de sensores y ETL |
 | `http response` | Respuesta inmediata 200 al emisor |
