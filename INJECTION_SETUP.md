@@ -1,70 +1,90 @@
-# Guía: Puesta en Marcha del Inyector de Datos ESAMUR
+# Guía: Puesta en Marcha del Inyector de Datos (DEMO)
 
-Este documento resume los pasos exactos que se siguieron para conseguir que el simulador de inyección de datos funcione correctamente contra el servidor ThingsBoard remoto.
+Este documento describe el flujo para inyectar datos históricos contra una
+instancia de ThingsBoard usando `simulator/simulador_sensores.py`.
 
 ---
 
 ## Contexto
 
-El inyector (`simulador_sensores.py`) envía datos históricos de ESAMUR al endpoint de telemetría de ThingsBoard **sensor a sensor**. Para ello necesita el `accessToken` específico de cada dispositivo registrado en la instancia de ThingsBoard destino.
+El inyector envía datos históricos al endpoint de telemetría de ThingsBoard
+**sensor a sensor**. Para ello necesita el `accessToken` específico de cada
+dispositivo registrado en la instancia destino.
 
-**Servidor ThingsBoard activo**: `http://18.185.1.118:9090`
+El destino se configura mediante la variable de entorno `ROOT`. Por defecto
+apunta a `http://localhost:9090` (TB local). Para apuntar a una instancia
+remota, exporta `ROOT=http://<host>:9090` antes de lanzar.
 
 ---
 
-## Pasos Realizados
+## Pasos
 
-### 1. Verificar conectividad con la máquina remota
-
-Se lanzó un `curl` de prueba para comprobar que el servidor era accesible:
+### 1. Verificar conectividad con la instancia ThingsBoard
 
 ```bash
-curl -X POST "http://18.185.1.118:9090/api/v1/N61v3NqeplzKyUaR3jsC/telemetry" \
+ROOT="${ROOT:-http://localhost:9090}"
+curl -X POST "${ROOT}/api/v1/<DEVICE_TOKEN>/telemetry" \
   -H "Content-Type: application/json" \
   -d '{"POT_CCM": 55.3}'
 ```
 
-**Resultado**: `200 OK` → Servidor accesible.
+Esperado: `200 OK`. Reemplaza `<DEVICE_TOKEN>` por el `accessToken` de un
+dispositivo provisionado vía la pipeline `deploy/`.
 
 ---
 
-### 2. Regenerar los tokens remotamente (`fetch_tokens_remote.py`)
-
-Se creó y ejecutó un script que:
-1. Hace login en el ThingsBoard remoto.
-2. Consulta el ID y el `accessToken` de cada uno de los 31 sensores ESAMUR.
-3. Sobreescribe el fichero `deploy/ESAMUR/DeviceimportCredentials_ESAMUR.csv` con los tokens correctos.
+### 2. Generar/regenerar los tokens (`fetch_tokens_remote.py`)
 
 ```bash
-ROOT=http://18.185.1.118:9090 python3 fetch_tokens_remote.py
+ROOT="${ROOT:-http://localhost:9090}" python3 fetch_tokens_remote.py
 ```
 
-**Resultado**: Los 31 dispositivos fueron encontrados y el CSV actualizado.
+Este script:
+1. Hace login en la instancia ThingsBoard apuntada por `ROOT`.
+2. Consulta el ID y `accessToken` de cada sensor configurado para el cliente
+   (variable `CLIENT`, por defecto `ESAMUR`).
+3. Genera el fichero `deploy/<CLIENT>/DeviceimportCredentials_<CLIENT>.csv`
+   con los tokens.
+
+> [!NOTE]
+> El directorio `deploy/<CLIENT>/` no se versiona en este repo (los tokens
+> son sensibles). Se crea localmente al ejecutar la pipeline de despliegue
+> o el `fetch_tokens_remote.py`.
 
 ---
 
 ### 3. Lanzar el simulador
 
 ```bash
-ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR
+ROOT="${ROOT:-http://localhost:9090}" python3 simulator/simulador_sensores.py --client ESAMUR
 ```
 
-**Resultado**: ✅ Inyección funcionando. Los datos llegan a ThingsBoard en `18.185.1.118` y son visibles en los dashboards.
+El simulador lee los tokens del CSV generado en el paso 2 y emite POST
+`/api/v1/{token}/telemetry` por cada fila del dataset.
+
+**Verificación:** abre la UI de ThingsBoard en `${ROOT}` → *Device Groups* →
+*All* → elige un sensor → *Latest Telemetry*. Los valores deben actualizarse
+según el dataset.
 
 ---
 
-## Resumen de Comandos (en orden)
+## Resumen de comandos (en orden)
 
 ```bash
-# 1. Regenerar tokens del ThingsBoard remoto
-ROOT=http://18.185.1.118:9090 python3 fetch_tokens_remote.py
+# Localmente (TB en 9090)
+python3 fetch_tokens_remote.py
+python3 simulator/simulador_sensores.py --client ESAMUR
 
-# 2. Lanzar el inyector
-ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR
+# Contra TB remoto
+export ROOT=http://<TB_HOST>:9090
+python3 fetch_tokens_remote.py
+python3 simulator/simulador_sensores.py --client ESAMUR
 
 # Opcional: limitar filas o ajustar velocidad
-ROOT=http://18.185.1.118:9090 python3 simulator/simulador_sensores.py --client ESAMUR --delay 0.5 --limit 100
+python3 simulator/simulador_sensores.py --client ESAMUR --delay 0.5 --limit 100
 ```
 
 > [!IMPORTANT]
-> Si la IP del servidor cambia, volver a ejecutar `fetch_tokens_remote.py` con la nueva IP antes de lanzar el simulador. Los tokens son propios de cada instancia de ThingsBoard.
+> Los tokens son propios de cada instancia de ThingsBoard. Si la URL de
+> destino cambia (o se reinicia TB con DB limpia), vuelve a ejecutar
+> `fetch_tokens_remote.py` antes de lanzar el simulador.
