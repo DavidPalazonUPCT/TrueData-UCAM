@@ -2520,17 +2520,129 @@ Populated during Phase 0 Task 0.3 Step 9 and Pre-Flight Task PF.6 Step 3. Record
 
 | Date | Phase | Step | Outcome | Notes |
 |---|---|---|---|---|
-| *TBD* | 0.3 | 1 — compose config | | |
-| *TBD* | 0.3 | 2 — service list | | |
-| *TBD* | 0.3 | 3 — TB + Node-RED up | | |
-| *TBD* | 0.3 | 4 — TB HTTP ready | | |
-| *TBD* | 0.3 | 5 — Node-RED HTTP | | |
-| *TBD* | 0.3 | 6 — deploy pipeline (optional) | | |
-| *TBD* | 0.3 | 7 — simulator (optional) | | |
-| *TBD* | PF.6 | 1 — re-run 0.3 steps | | |
-| *TBD* | PF.6 | 2 — diff against baseline | | |
+| 2026-04-15 | 0.3 | 1 — compose config raíz | OK | `docker compose config` exit 0 |
+| 2026-04-15 | 0.3 | 2 — service list | OK | Solo `inference-service` en raíz; TB+NR viven en sus subdirs (`truedata-thingsboard/`, `truedata-nodered/`) cada uno con compose propio |
+| 2026-04-15 | 0.3 | 3 — TB + Node-RED up | DEFERRED | Pull `thingsboard/tb-postgres:4.1.0` falla por DNS WSL (`registry-1.docker.io: no such host`); imágenes cacheadas son `flowguard/thingsboard:4.3.1` y `thingsboard/tb-node:4.3.1`. Issue de entorno, no de código. Decisión usuario: "olvidate de testear a full docker. Mientras que tenga buena pinta, continua" — saltamos los steps de runtime |
+| — | 0.3 | 4 — TB HTTP ready | DEFERRED | Bloqueado por step 3 |
+| — | 0.3 | 5 — Node-RED HTTP | DEFERRED | Bloqueado por step 3 |
+| — | 0.3 | 6 — deploy pipeline (opt) | DEFERRED | Bloqueado por step 3 |
+| — | 0.3 | 7 — simulator (opt) | DEFERRED | Bloqueado por step 3 |
+| 2026-04-15 | 0.3 | 8 — teardown | N/A | Nada se levantó |
+| 2026-04-15 | PF.1 | 1 — UCAM repo limpio | OK (con commit previo) | Untracked iniciales (`.claude/`, `docs/superpowers/`) commiteados como gobernanza antes del tag (commit `2f32bdf`) |
+| 2026-04-15 | PF.1 | 2 — GitLab clone limpio | OK | Working tree limpio en `main`, fetch a origin OK |
+| 2026-04-15 | PF.1 | 3 — Auth GitLab | OK | OAuth token funcional para fetch + push |
+| 2026-04-15 | PF.2 | 1 — pre-commit hook | OK | Instalado en `.git/hooks/pre-commit` del clone GitLab; verificado activo en los 3 MRs |
+| 2026-04-15 | PF.4 | — | OK (en branch dedicada) | Tier-1 deletions (deploy/MCT, deploy/ESAMUR, deploy/ParametrosConfiguracion.txt, deploy/t, locustfile.py) ejecutadas; ver Appendix E para detalle |
+| 2026-04-15 | PF.6 | 1 — re-run 0.3 | DEFERRED | Mismo bloqueo de DNS WSL |
+| 2026-04-15 | PF.6 | 2 — diff vs baseline | N/A | Sin runtime baseline para comparar |
 
-If a row's outcome is FAIL, add a follow-up row describing the remediation decision (Option A fix, Option B accept, Option C escalate).
+**Resumen ejecutivo de Phase 0 + Pre-Flight:** Verificación de sintaxis OK en ambos repos. Verificación live (docker up) saltada por DNS environment issue + decisión explícita de usuario de no bloquear los MRs por testing live. Todos los demás gates (sintaxis Python, sintaxis JSON, `docker compose config`, secret scan en diff vs main, commit format) se ejecutaron en cada MR antes de push y pasaron limpios.
+
+---
+
+## Appendix E: Cleanup deviations (más amplio que PF.4 original)
+
+El plan original PF.4 contemplaba solo eliminar Tier-1 secrets (deploy/MCT, deploy/ESAMUR, deploy/ParametrosConfiguracion.txt, deploy/t, locustfile.py). Durante la ejecución el usuario expandió el scope para reflejar que **el código ML de `src/` no es de UCAM** — es contribución de otros partners y debe quitarse del repo UCAM antes de la contribución GitLab. Esto motivó un branch dedicado `chore/strip-to-base-module` con 8 commits, ya mergeado a `main` y tagged `baseline-clean-base-module`.
+
+### Commits del cleanup (rama mergeada a main)
+
+| Commit | Tipo | Resumen |
+|---|---|---|
+| `2f32bdf` | chore | Add governance: plan + skill tooling (pre-cleanup) |
+| `6e872f3` | chore | Strip ML pipeline (`src/` excepto simulator, 5 Dockerfiles ML, root `docker-compose.yml`, `requirements.txt`, `entrypoint.sh`, `docs/openapi*`/`swagger.html`/`redoc.html`, `images/`); MOVE `src/dataloader/simulador_sensores.py` → `simulator/` |
+| `15f09a3` | docs | Update simulator path en INJECTION_SETUP + SIMULATION_GUIDE |
+| `5d0fe78` | chore | Rename FlowGuard → TrueData en compose + READMEs de módulos (network: `flowguard-compose_iot_network` → `truedata_iot_network`) |
+| `4e8ea1c` | docs | Rewrite root README + DEPLOYMENT_GUIDE para reflejar scope base-only |
+| `0a1feb3` | chore | PF.4: Tier-1 secrets (deploy/MCT, deploy/ESAMUR, deploy/ParametrosConfiguracion.txt, deploy/t — locustfile ya borrado en `6e872f3`) |
+| `c00d24a` | chore | Sanitize `fetch_tokens_remote.py`: default ROOT EC2 → localhost |
+| `d4a50c0` | docs | Sanitize INJECTION_SETUP: cloud IP `18.185.1.118` + token `N61v3Nq...` → placeholders |
+| `2580ddc` | chore | Replace 2 tokens TB MCT hardcoded en Plantillas (`2rZbP1mTKGm6cdCx4bDW`, `1DyXZfNEgoBK7U31WO4w`) por placeholders |
+
+### Tags resultantes
+
+| Tag | HEAD | Significado |
+|---|---|---|
+| `baseline-pre-contribution` | pre-cleanup | Estado UCAM con código ML + secrets + branding FlowGuard. Archaeology — referenciar para entender qué había antes. |
+| `baseline-clean-base-module` | post-cleanup (`2580ddc`) | Estado UCAM scope-correcto: solo TB + NR + deploy + simulator + system_sizing. Punto de partida real para los MRs. |
+
+### Decisiones registradas
+
+- **No purga de historial git.** Los secrets eliminados siguen en commits anteriores. Repo es privado y los tokens son lab-environment, así que historia preservada (la opción de `git filter-repo` o BFG queda disponible pero no se ejecutó). Si el repo se vuelve público en el futuro, ejecutar la purga antes.
+- **Tag `baseline-pre-contribution` se mantiene** como referencia archaeology, no se borra.
+- **Skill `truedata-gitlab-contribution` y plan se commitearon** en el repo UCAM antes del tag para que el baseline sea self-documenting.
+
+---
+
+## Appendix F: MR landings (estado real al cierre de la sesión)
+
+| MR | Branch GitLab | Commit | Files | LOC | Estado |
+|---|---|---|---|---|---|
+| MR-1 | `feature/base/thingsboard-nodered-setup` | (amend post-traducción ES) | 9 | ~950 | Pushed, esperando creación de MR vía web |
+| MR-2 | `feature/base/deploy-automation` | `597b143` | 38 | 7726 | Pushed, esperando creación de MR vía web |
+| MR-3 | `feature/base/opc-client-contract` | (head local) | 9 | 577 | Pushed, esperando creación de MR vía web |
+
+URLs para crear los MRs (manualmente, `glab` no instalado):
+- MR-1: `https://collab.libelium.com:46231/proyectos-europeos/truedata/truedata/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fbase%2Fthingsboard-nodered-setup`
+- MR-2: `https://collab.libelium.com:46231/proyectos-europeos/truedata/truedata/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fbase%2Fdeploy-automation`
+- MR-3: `https://collab.libelium.com:46231/proyectos-europeos/truedata/truedata/-/merge_requests/new?merge_request%5Bsource_branch%5D=feature%2Fbase%2Fopc-client-contract`
+
+### Desviaciones del file-mapping del plan
+
+- **TB image:** plan especificaba ThingsBoard CE 3.6+; usamos `tb-node:4.1.0` (no `tb-postgres`) para encajar con el scaffold GitLab que define `postgres` como servicio aparte y consume vía `SPRING_DATASOURCE_URL`. Versión: 4.1 vs 3.6 — más reciente, compatible.
+- **TB port:** plan asumía 9090 (UCAM); GitLab convention es 8080 (Spring boot default de `tb-node`). Usamos 8080.
+- **Network name:** plan no tenía decisión; usamos `truedata-net` (convención root compose GitLab), no `truedata_iot_network` (usado en UCAM tras el rename).
+- **Service names:** plan no especificaba; renombramos `nodered_tb`→`node-red`, `db`→`postgres` para alinear con scaffold GitLab.
+- **Idioma:** todos los commits, READMEs nuevos y descripciones de MR fueron escritos en español (decisión del usuario a mitad de sesión); MR-1 commit se amend-pushed para reemplazar la versión en inglés.
+
+### Sanitizaciones aplicadas durante el port (resumen)
+
+Los 4 hallazgos CRITICAL y 8 HIGH del audit residual se resolvieron así:
+
+| Riesgo original | Resolución |
+|---|---|
+| `credentialSecret: "airtrace"` (settings.js) | `process.env.NODE_RED_CREDENTIAL_SECRET` (sin default, fail-fast) |
+| `adminAuth.password = "$2b$08$..."` (hash de "tenantairtrace") | `process.env.NODE_RED_PASSWORD_HASH` (sin default; hash vacío bloquea login) |
+| `DATABASE_USER: tenant@thingsboard.org` + `DATABASE_PASSWORD: tenant` en compose UCAM | Sustituidos por `${POSTGRES_USER}` / `${POSTGRES_PASSWORD}` del scaffold + `TB_ADMIN_USER` / `TB_ADMIN_PASSWORD` para el tenant admin |
+| `http://172.25.0.X:...` hardcoded en deploy scripts | `os.environ.get("TB_URL", "http://thingsboard:8080")` y `os.environ.get("NODE_RED_URL", "http://node-red:1880")` |
+| `tenant@thingsboard.org` / `tenant` hardcoded en `simulator/simulador_sensores.py` | `TB_ADMIN_USER` / `TB_ADMIN_PASSWORD` env (sin default para password) |
+| `os.environ['ROOT'] = "..."` set explícito en `env_client.py:62` y `4_Subir_thresholds.py` | DELETED — la var se hereda del entorno del caller |
+| Path `deploy/ParametrosConfiguracion.txt` hardcoded en 6 scripts | `PARAMETROS_PATH` env var con default relativo a `os.path.dirname(__file__)` (portable a cualquier CWD) |
+| Path `src/models/...` hardcoded en `4_Subir_thresholds.py` | `THRESHOLDS_CSV_DIR` env var (default `thresholds`) |
+
+---
+
+## Appendix G: Outstanding follow-ups
+
+Items que NO se ejecutaron en esta sesión y que requieren acción posterior. Ordenados por prioridad.
+
+### Acción humana requerida
+
+1. **Abrir los 3 MRs vía las URLs de Appendix F** y asignar reviewer:
+   - MR-1, MR-2: `@ucam-lead`
+   - MR-3: `@ucam-lead` + `@neoradix-opc` (para revisar el contrato OPC)
+2. **Rotar el GitLab PAT** `glpat-7tSSnNd3arS4FRPZIWE1GW86MQp1OjF6CA.01.0y1z0186l` que sigue plain en `git remote -v` del clone GitLab. Tarea PF.3 del plan, no bloqueante para abrir los MRs pero crítica antes del merge.
+3. **Decisión:** `INJECTION_SETUP.md` y `SIMULATION_GUIDE.md` (Tier 2 candidatos del plan PF.5) NO se borraron — siguen como docs UCAM. Si quieres consolidarlos en `shared/simulator/README.md` (que ya cubre el flujo en GitLab), borra los originales del repo UCAM.
+
+### Bugs/refactors latentes preservados (anotados en READMEs §10)
+
+4. **`base/deploy/4_Subir_thresholds.py`** lee de `THRESHOLDS_CSV_DIR/<client>/<model>/score_max.csv`. Esta ruta antes vivía bajo `src/models/` (eliminado en cleanup). Hasta que se decida la nueva ubicación, ese paso del pipeline necesita los CSVs aportados externamente.
+5. **`base/deploy/3_Solicitar_Niveles_Criticidad.py:22`** y `3.1_Modificar_Niveles_Criticidad.py:26` leen `f"{CLIENTE}/DeviceimportCredentials_CORE.csv"` sin prefijo `deploy/` (diferente del resto). Bug pre-existente preservado verbatim.
+6. **`fetch_tokens_remote.py:25`** lee `src/data/{CLIENT}/DeviceImport.csv` (path inexistente; el canónico es `deploy/{CLIENT}/`). Bug pre-existente preservado.
+7. **Refactor de credenciales TB/NR a env vars puras** en `base/deploy/`: hoy se cargan desde `ParametrosConfiguracion.txt` (legado UCAM). Sería más limpio leer directamente `TB_ADMIN_USER`/`TB_ADMIN_PASSWORD` y `NODE_RED_USER`/`NODE_RED_PASSWORD` y eliminar el fichero. Documentado como TODO en `base/deploy/README.md` §10.
+
+### Verificación live pendiente
+
+8. **Phase 0 Task 0.3 Steps 3-7** (live stack run) quedaron deferred por DNS WSL. Cuando el entorno docker tenga acceso a registry, ejecutar:
+   - Crear red `docker network create --driver=bridge --subnet=172.25.0.0/24 truedata-net`
+   - `cp .env.example .env` y poblar `POSTGRES_PASSWORD`, `TB_ADMIN_PASSWORD`, `NODE_RED_PASSWORD_HASH`, `NODE_RED_CREDENTIAL_SECRET`
+   - `docker compose -f base/docker-compose.override.yml up -d`
+   - Verificar TB UI (http://localhost:8080) y Node-RED (http://localhost:1880)
+   - Documentar resultado en una nueva fila de Appendix D
+
+### Tareas no ejecutadas que quedaban en el plan original
+
+9. **Pre-Flight PF.5** (Tier 2 deletions) — `entrypoint.sh`, `INJECTION_SETUP.md`, `SIMULATION_GUIDE.md`, `.docx`, `docs/openapi.yaml`+swagger+redoc, `images/`. De estos: `entrypoint.sh`, openapi/swagger/redoc, e `images/` SE BORRARON en commit `6e872f3` como parte del strip ML; el `.docx`, `INJECTION_SETUP.md` y `SIMULATION_GUIDE.md` siguen presentes (docs UCAM). Ver punto 3 de esta sección si quieres eliminarlos.
+10. **Plantillas/ETLNodeRed pipeline interpolation** — los placeholders `accessTokenMCTM2` / `accessTokenMCTM3` que reemplazaron los tokens hardcoded en commit `2580ddc` aún no son interpolados por `1_Configuracion_General.py` (solo conoce `accessTokenClientesNiveles` y `accessTokenNivelesDescartes`). Para que la pipeline funcione end-to-end con esos modelos MCT, hay que extender el código de interpolación. No bloqueante para MR-2 (las plantillas se incluyen como están), sí necesario para deploy real.
 
 ---
 
