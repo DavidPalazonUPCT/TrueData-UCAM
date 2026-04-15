@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 import os
 
-ROOT = os.getenv("ROOT", "http://3.66.4.174:9090")
+ROOT = os.getenv("ROOT", "http://localhost:9090")
 USER = os.getenv("TB_USER", "tenant@thingsboard.org")
 PASS = os.getenv("TB_PASS", "tenant")
 CLIENT = os.getenv("CLIENT", "ESAMUR")
