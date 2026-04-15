@@ -1,9 +1,0 @@
-{
-  "client": "ESAMUR",
-  "task": "train",
-  "iter": 4540,
-  "date_ymd_hms": "2025Y-10M-02D_10h-42m-30s",
-  "window_start": "",
-  "window_end": "",
-  "wandb_run": "true"
-}

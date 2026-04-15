@@ -1,7 +1,0 @@
-datos_0: data input from ETL that has values in all columns (4 columns has full None)
-datos_1: data input from ETL that has None in some rows of some columns
-datos_2: data input from ETL that has None in all rows of a lot of columns
-datos_3: data input from ETL that has "Error" in "3_LT_001_PV" column
-datos_4: data input from ETL that has "" in "3_LT_001_PV" column
-
-
