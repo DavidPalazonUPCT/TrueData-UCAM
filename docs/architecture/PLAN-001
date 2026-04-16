@@ -423,7 +423,33 @@ if (tagCount === 0) {
 }
 
 // ============================================================
-// PASO 2: BUILD GATEWAY MQTT PAYLOAD (salida 1 → TB)
+// PASO 2a: BUILD CONNECT MESSAGES (para devices no vistos aún)
+// ============================================================
+// Flujo: la primera vez que NR ve un tag, envía un `connect` al
+// Gateway con el campo `type` para que TB cree el device con el
+// profile correcto (sensor_planta). Después, solo telemetry.
+//
+// `connect` es idempotente en TB: publicarlo para un device ya
+// existente no hace nada visible. Ver ADR-003 §4.2 opción A.
+
+const DEVICE_PROFILE = flow.get("DEVICE_PROFILE") || "sensor_planta";
+const seen = flow.get("connectedDevices") || new Set();
+const connectMsgs = [];
+
+for (const tagName of Object.keys(tags)) {
+    if (!seen.has(tagName)) {
+        connectMsgs.push({
+            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),
+            topic: "v1/gateway/connect",
+            qos: 1
+        });
+        seen.add(tagName);
+    }
+}
+flow.set("connectedDevices", seen);
+
+// ============================================================
+// PASO 2b: BUILD GATEWAY MQTT TELEMETRY PAYLOAD
 // ============================================================
 const gatewayPayload = {};
 for (const [tagName, value] of Object.entries(tags)) {
@@ -439,6 +465,12 @@ const mqttMsg = {
     qos: 1,
     _tagCount: tagCount
 };
+
+// Salida 1: primero connects (si los hay), luego telemetry.
+// El nodo mqtt-out soporta arrays de mensajes; el orden se preserva.
+const output1 = connectMsgs.length > 0
+    ? [...connectMsgs, mqttMsg]
+    : mqttMsg;
 
 // ============================================================
 // PASO 3: BUILD ML INFERENCE BODY (salida 2 → servicio ML)
@@ -459,13 +491,22 @@ const mlMsg = {
     headers: { "Content-Type": "application/json" }
 };
 
-return [mqttMsg, mlMsg, null]; // salida 1 → TB, salida 2 → ML, sin error
+return [output1, mlMsg, null]; // salida 1 → TB, salida 2 → ML, sin error
 ```
 
 **Nota sobre las 3 salidas:** el function node tiene 3 outputs:
-- Salida 1 → mqtt-out (persistencia en TB)
+- Salida 1 → mqtt-out (persistencia en TB). Cuando hay devices nuevos en
+  el scan, emite primero los `connect` (con `type`) y después el
+  `telemetry`. NR serializa el array en orden hacia mqtt-out
 - Salida 2 → http-request (inferencia ML)
 - Salida 3 → http-response directa (error 400, sin publicar a ningún destino)
+
+**Nota sobre el Set de devices conectados:** `flow.connectedDevices` se
+mantiene en memoria del flow. Tras un restart de NR el Set se vacía y
+se repuebla en el primer scan. Como `connect` es idempotente en TB
+(ADR-003 §4.2), esto no causa problemas — solo un ligero overhead en el
+primer scan post-restart (27 mensajes connect adicionales). Coste
+aceptable.
 
 **Nota sobre la URL de ML:** la URL del servicio de inferencia se lee de
 una variable de flow (`flow.ML_INFERENCE_URL`) con fallback a un default.
@@ -579,26 +620,52 @@ el OPC Client si NR no puede publicar.
 
 ---
 
-## Fase 3 — ThingsBoard: Gateway device + configuración
+## Fase 3 — ThingsBoard: Gateway device + device profile
 
-**Objetivo:** crear el device Gateway en TB y configurar el device profile
-para que los sub-devices creados via Gateway tengan el profile correcto.
+**Objetivo:** provisionar en TB los únicos dos recursos que v2 necesita:
+el **Gateway device** (1 entidad, 1 token) y el **device profile**
+`sensor_planta` (1 entidad) con la rule chain asociada a los sensores.
+
+**No se pre-crean los 27 devices per-sensor.** Se auto-crean con el
+profile correcto la primera vez que NR envía un `connect` con `type`
+(ver ADR-003 §4.2, opción A). Esto elimina escalado lineal del deploy
+pipeline con el número de sensores y con el número de clientes.
 
 ### Tareas
 
-**3.1 — Crear Gateway device en TB**
+**3.1 — Crear device profile `sensor_planta`**
+
+El profile debe existir antes de que NR envíe el primer `connect`. Si
+no existe, `connect` con `type: "sensor_planta"` lo crea, pero sin la
+rule chain ni los CFs que queremos asociar → mejor crearlo explícito.
 
 ```bash
-# Via TB REST API (automatizable en deploy pipeline)
-
-# 1. Login para obtener JWT
 TB_HOST="http://localhost:8080"
 JWT=$(curl -s -X POST "$TB_HOST/api/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"username":"tenant@thingsboard.org","password":"tenant"}' \
   | jq -r '.token')
 
-# 2. Crear device con flag "gateway"
+# Crear o importar profile sensor_planta
+# Nota: si ya tienes un JSON con el profile exportado (devices_root_rule_chain
+# asociada), importar ese. Si es creación from-scratch:
+curl -s -X POST "$TB_HOST/api/deviceProfile" \
+  -H "Content-Type: application/json" \
+  -H "X-Authorization: Bearer $JWT" \
+  -d '{
+    "name": "sensor_planta",
+    "type": "DEFAULT",
+    "transportType": "DEFAULT",
+    "description": "Device profile para los sensores del PLC. Creado por ADR-003 v2."
+  }'
+# Tras crearlo, asociar la devices_root_rule_chain al profile desde la UI
+# (o via API con el defaultRuleChainId correcto).
+```
+
+**3.2 — Crear Gateway device**
+
+```bash
+# 1. Crear device con flag gateway
 GATEWAY_ID=$(curl -s -X POST "$TB_HOST/api/device" \
   -H "Content-Type: application/json" \
   -H "X-Authorization: Bearer $JWT" \
@@ -612,7 +679,7 @@ GATEWAY_ID=$(curl -s -X POST "$TB_HOST/api/device" \
     }
   }' | jq -r '.id.id')
 
-# 3. Obtener access token del gateway
+# 2. Obtener access token del gateway
 GATEWAY_TOKEN=$(curl -s "$TB_HOST/api/device/$GATEWAY_ID/credentials" \
   -H "X-Authorization: Bearer $JWT" \
   | jq -r '.credentialsId')
@@ -622,47 +689,57 @@ echo "Gateway Token: $GATEWAY_TOKEN"
 # → Este token va en la config MQTT de NR (Fase 2 §2.5)
 ```
 
-**3.2 — Configurar device profile por defecto**
-
-Los devices creados por auto-provisioning del Gateway reciben el profile
-por defecto del tenant. Si el profile por defecto no es el correcto
-(e.g., necesitan `profile_device` en vez de `default`):
+**3.3 — Verificar auto-provisioning via `connect` con `type`**
 
 ```bash
-# Opción A: cambiar el default device profile del tenant
-# (afecta a TODOS los devices nuevos, no solo los del gateway)
-# → NO RECOMENDADO si hay otros device profiles en uso
-
-# Opción B: pre-crear los devices con el profile correcto
-# → RECOMENDADO. El deploy pipeline ya hace esto.
-# Los devices deben existir ANTES de que el Gateway publique.
-# El Gateway solo añade telemetría, no crea devices de producción.
-```
-
-**3.3 — Verificar que devices existentes reciben telemetría via Gateway**
-
-```bash
-# Publicar para un device que YA EXISTE en TB
+# Publicar connect + telemetry para un device que NO existe todavía
 mosquitto_pub -h localhost -p 1883 \
   -u "$GATEWAY_TOKEN" \
   -t "v1/gateway/connect" \
-  -m '{"device":"Q_SALIDA_D1"}'
+  -m '{"device":"Q_SALIDA_D1","type":"sensor_planta"}'
 
 mosquitto_pub -h localhost -p 1883 \
   -u "$GATEWAY_TOKEN" \
   -t "v1/gateway/telemetry" \
   -m '{"Q_SALIDA_D1": [{"ts": 1713200090000, "values": {"value": 55.5}}]}'
 
-# Verificar en TB UI → Devices → Q_SALIDA_D1 → Latest telemetry
-# ¿Aparece value=55.5 con ts correcto?
+# Verificar:
+# - TB UI → Devices → Q_SALIDA_D1 existe
+# - Su device profile es "sensor_planta" (no "default")
+# - Tiene telemetría con value=55.5 y ts=1713200090000
+# - La rule chain del profile se ejecutó (save_timeseries ok)
+```
+
+**3.4 — Idempotencia del connect**
+
+Publicar un segundo `connect` para el mismo device. TB **no debe**
+duplicar el device ni resetear su profile.
+
+```bash
+mosquitto_pub -h localhost -p 1883 \
+  -u "$GATEWAY_TOKEN" \
+  -t "v1/gateway/connect" \
+  -m '{"device":"Q_SALIDA_D1","type":"sensor_planta"}'
+# → esperado: sin cambios visibles, sin errores
 ```
 
 ### Criterio de aceptación Fase 3
 
-- [ ] Device "OPC-Gateway" creado con flag gateway en TB
+- [ ] Device profile `sensor_planta` creado con rule chain asociada
+- [ ] Device "OPC-Gateway" creado con flag gateway
 - [ ] Token del Gateway configurado en NR mqtt-broker node
-- [ ] Telemetría publicada via Gateway llega a devices pre-existentes
-- [ ] Rule chain del device profile se ejecuta normalmente
+- [ ] `connect` con `type` crea el device con profile `sensor_planta`
+      (verificado con `Q_SALIDA_D1` de prueba)
+- [ ] Un segundo `connect` sobre el mismo device es idempotente
+- [ ] Rule chain del profile se ejecuta al llegar telemetría
+
+### Lo que Fase 3 ya NO hace (comparado con la versión original)
+
+| Acción original | Estado |
+|---|---|
+| Pre-crear 27 devices per-sensor via REST API | **Eliminada** — auto-provisioning lazy via `connect` |
+| Pre-crear tokens individuales para los 27 devices | **Eliminada** — solo el token del Gateway |
+| Mantener `global.diccionarioAccess` en NR con 27 entradas | **Eliminada** — NR no necesita tokens per-device |
 
 ---
 
@@ -1158,3 +1235,326 @@ completó la migración de schema fresca en ~90 s. NR arrancó en ~8 s.
   no-external en el compose raíz para que Compose la gestione, pero eso
   obligaría a que los sub-composes la referencien como "parent", lo que
   les impediría levantarse standalone. Mantener external por ahora.
+
+---
+
+## Apéndice D — Contratos de las APIs del pipeline v2 (2026-04-16)
+
+Diseño de los dos contratos de API que soporta el pipeline v2 a nivel
+de NR. Definidos por UCAM como parte del diseño del flow.
+
+- **API 1 (entrante)**: `/api/opc-ingest` — endpoint HTTP que NR expone
+  para recibir el scan bulk del OPC Client de Neoradix.
+- **API 2 (saliente)**: `/api/inference` — endpoint HTTP que el servicio
+  de ML expone (externo a UCAM) y al que NR postea el scan como
+  fire-and-forget.
+
+Los contratos son **decisiones de diseño UCAM**. Neoradix adaptará su
+cliente HTTP para postear en el formato de API 1. El servicio ML se
+contratará o construirá externamente para aceptar el formato de API 2.
+
+### D.1 — Naming real de devices en TB (base del diseño)
+
+Referencia: `deploy/ESAMUR/DeviceImport.csv`. La convención para ESAMUR es:
+
+| Columna | Valor | Ejemplo |
+|---|---|---|
+| `name` | Nombre del tag literal del PLC, sin prefijo | `POT_CCM`, `TURB1`, `FT1`, `CAUDAL_PURGA` |
+| `type` | `"<Cliente> Device"` (con espacio) | `"ESAMUR Device"` |
+
+Total: **31 sensores para ESAMUR** (variable por cliente). Todos del mismo
+`type`, lo que permite una rule chain única por cliente para todos los
+sensores.
+
+**Consecuencia crítica para el function node de NR**: no hay mapeo
+tag→device_name. Es **identidad**. El tag `POT_CCM` del payload OPC se
+convierte directamente en el device name `POT_CCM` en el payload Gateway
+MQTT. Esto simplifica el function node: no hay tablas de conversión ni
+lógica de prefijos.
+
+Si en el futuro aparece un cliente cuya convención difiera (p.ej.
+prefijo `CLIENTE_` en el nombre), se introducirá una capa de mapeo
+configurable por cliente, pero no es necesario hoy.
+
+### D.2 — API 1: `POST /api/opc-ingest` (OPC Client → NR)
+
+**Endpoint**: `POST http://<host>:1880/api/opc-ingest`
+(ver Fase 1, §URL canónica propuesta).
+
+**Request body** (`Content-Type: application/json`):
+
+```json
+{
+  "ts": 1776326159190,
+  "values": {
+    "POT_CCM": 300.0,
+    "TURB1": 0.0,
+    "FT1": 1322.22,
+    "pH_Entrada": 7.635,
+    "SH2_AguaBruta": 3.472,
+    "reserva4": 81.71
+  }
+}
+```
+
+#### D.2.1 — Campos
+
+| Campo | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `ts` | number (Unix ms) | **Sí** | Timestamp del PLC del momento del scan. Único para todo el scan (resuelve jitter intra-scan por diseño, ver ADR-003 §2.3.2). Debe ser client-side; requisito para store-and-forward (ADR-003 §2.3.1) |
+| `values` | object | **Sí, no vacío** | Diccionario `{tag_name: value}` con las lecturas del scan. `tag_name` es el nombre literal del sensor (coincide con `name` en TB) |
+| `values.<tag>` | number \| boolean \| string \| object | Sí | Valor del tag. TB Gateway MQTT acepta estos tipos nativamente; NR no hace type-checking |
+
+#### D.2.2 — Validación (hecha por NR)
+
+**Mínima**, orientada a detectar bugs del emisor sin imponer un schema
+rígido que acople el flow a un cliente concreto:
+
+- `ts` existe y es `typeof "number"` → si no, **400**.
+- `values` existe y es `typeof "object"` y no está vacío → si no, **400**.
+- **No se valida** el número de tags (varía por cliente: 31 en ESAMUR,
+  puede ser N en otro cliente).
+- **No se valida** el tipo de cada `values.<tag>`: TB acepta string,
+  boolean, double, long, JSON nativamente. Restringir en NR sería
+  imponer una limitación sintética.
+- **No se valida** que los tag names existan como devices en TB: el
+  Gateway MQTT API auto-provisiona si falta.
+
+#### D.2.3 — Respuestas
+
+| Código | Cuerpo | Cuándo |
+|---|---|---|
+| `200 OK` | `{"status": "ok", "tags": <N>}` | Payload válido, MQTT publish a TB exitoso (PUBACK recibido). `<N>` = número de tags recibidos |
+| `400 Bad Request` | `{"status": "error", "reason": "<motivo>"}` | `ts` ausente/no numérico, `values` ausente/vacío/no-objeto |
+| `500 Internal Server Error` | `{"status": "error", "reason": "mqtt publish failed"}` | MQTT publish a TB falló (broker caído, timeout) |
+
+#### D.2.4 — Razonamiento del diseño
+
+- **`ts` obligatorio con rechazo 400 duro**: un silent default
+  (`ts = Date.now()` si falta) rompe store-and-forward sin que nadie se
+  entere hasta que haya un gap real y los datos lleguen marcados como
+  "ahora". Un 400 en desarrollo es visible y accionable; un default
+  silencioso corrompe datos en producción y es muy caro de detectar
+  después.
+- **Sin campo `client`**: una instancia de NR por cliente es el modelo
+  de despliegue (una planta ESAMUR = un docker compose = una instancia
+  NR). El identificador del cliente es implícito por el entorno. YAGNI:
+  si surge multi-tenancy en una instancia, se añade.
+- **`values` dict plano en vez de array `[{tag, value}]`**: más ligero,
+  semánticamente más claro (los tags son llaves únicas), y más fácil de
+  parsear.
+- **No replicamos el formato TB Gateway MQTT literalmente en el POST
+  del OPC Client**: desacoplamos "qué envía Neoradix" de "qué espera
+  TB". Neoradix no sabe ni debe saber de Gateway MQTT. Esto facilita
+  sustituir TB en el futuro sin tocar Neoradix.
+
+### D.3 — API 2: `POST /api/inference` (NR → servicio ML)
+
+**Endpoint**: `POST http://<ml-host>:<ml-port>/api/inference`
+(hostname y puerto **TODO** — pendiente de confirmar con el servicio
+que se contratará/construirá).
+
+**Request body** (`Content-Type: application/json`):
+
+```json
+{
+  "ts": 1776326159190,
+  "sensors": {
+    "POT_CCM": 300.0,
+    "TURB1": 0.0,
+    "FT1": 1322.22,
+    "pH_Entrada": 7.635,
+    "SH2_AguaBruta": 3.472,
+    "reserva4": 81.71
+  }
+}
+```
+
+#### D.3.1 — Campos
+
+| Campo | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `ts` | number (Unix ms) | Sí | Mismo `ts` que se envió a TB (atomicidad del scan). Permite al modelo correlacionar con los datos almacenados en TB si lo necesita |
+| `sensors` | object | Sí, no vacío | Mismos valores que `values` en API 1. Nombrado `sensors` por claridad semántica (son lecturas físicas del PLC) |
+| `sensors.<tag>` | number \| boolean \| string | Sí | Valor del sensor. NR no filtra ni transforma; envía todo el scan tal cual |
+
+#### D.3.2 — Comportamiento de NR hacia este endpoint
+
+- **Fire-and-forget**: NR postea y no bloquea la ingestión en TB. TB es
+  la fuente de verdad; la inferencia es un servicio paralelo.
+- **Timeout**: 5 s. Si el servicio ML no responde en 5 s, NR cancela la
+  petición y continúa. El ciclo del PLC es ~34 s; 5 s es ~15% del
+  ciclo. Más permisivo acumularía conexiones pendientes si ML se
+  cuelga.
+- **Respuesta ignorada**: NR descarta el body de respuesta sea cual sea.
+  El servicio ML envía los resultados de inferencia a TB y al servicio
+  de blockchain por su propia cuenta, por un camino separado. NR no
+  participa en ese path.
+- **Manejo de errores**:
+  - `2xx`: log info `"ML inference dispatched, ts=<ts>"`.
+  - `4xx` / `5xx`: log warning `"ML inference returned <code>, ts=<ts>"`. No bloquea.
+  - Timeout o connection refused: log warning `"ML inference unreachable, ts=<ts>"`. No bloquea.
+- **URL configurable via flow variable** `flow.ML_INFERENCE_URL`. Si no
+  está set, NR loguea un warning al arranque (`"ML_INFERENCE_URL not
+  configured, skipping ML output"`) y el nodo http-request se omite en
+  runtime. Esto permite levantar el entorno en desarrollo sin el
+  servicio ML deployado.
+
+#### D.3.3 — Razonamiento del diseño
+
+- **Dict por nombre de tag en vez de array ordenado**: un modelo bien
+  diseñado identifica features por nombre, no por posición. Añadir o
+  quitar sensores (p.ej. `reserva4` se activa en el futuro, o
+  `FIT13_PLC4` se deprecia) no rompe el contrato ni requiere coordinar
+  un redeploy atómico entre UCAM y ML team. Si el servicio ML
+  internamente espera un vector fijo, la conversión dict→array se hace
+  en su lado, no aquí.
+- **Todos los tags del scan, sin filtrar**: UCAM no sabe qué features
+  usa el modelo concreto. Filtrar en NR acoplaría UCAM al modelo del
+  momento. Reentrenar con otro subset de features requeriría cambiar
+  código NR → coupling innecesario. El modelo decide qué features
+  consumir de lo que recibe.
+- **`ts` compartido con el enviado a TB**: un único timestamp por scan
+  refleja la atomicidad del muestreo del PLC y mantiene coherencia
+  entre las dos salidas del function node. Si el modelo necesita
+  correlacionar su inferencia con el dato almacenado en TB, el `ts` es
+  la clave natural.
+- **Sin `client` en el body**: mismo razonamiento que API 1. Una
+  instancia de NR por cliente; el identificador es implícito. Si el
+  servicio ML fuera compartido entre clientes en el futuro, se añadiría
+  un header `X-Client-Id` o similar, pero no hoy.
+- **Respuesta ignorada**: la separación de responsabilidades es más
+  limpia si NR no interpreta el resultado del modelo. TB y blockchain
+  son los consumidores reales del output ML, y ellos tienen su propio
+  endpoint de recepción. NR actúa como *disparador*, no como *broker
+  de resultados*.
+- **Fire-and-forget con timeout corto**: la independencia TB↔ML que
+  fija ADR-003 exige que un fallo del ML no afecte a la persistencia.
+  Un timeout sin cap violaría esta independencia (conexiones
+  acumuladas → eventual bloqueo del loop de Node-RED).
+- **Fallback silencioso si URL no set**: el entorno de desarrollo puede
+  no tener el servicio ML deployado. Bloquear NR en ese escenario
+  impediría probar la ingestión a TB aisladamente. Un warning al
+  arranque es suficiente señal.
+
+### D.4 — Flujo del function node (pseudo-código)
+
+Consolidación de D.2 + D.3 en la lógica que vivirá en el único function
+node de Fase 2:
+
+```
+input:  msg.payload (HTTP body del OPC Client)
+output 1 → mqtt-out (payload Gateway MQTT hacia TB)
+output 2 → http-request (body hacia ML inference)
+output 3 → http-response (error 400, solo si payload inválido)
+
+validate:
+  if typeof msg.payload.ts !== "number":
+    return [null, null, { statusCode: 400, payload: { status: "error", reason: "ts missing or not number" } }]
+  if typeof msg.payload.values !== "object" or Object.keys(msg.payload.values).length === 0:
+    return [null, null, { statusCode: 400, payload: { status: "error", reason: "values missing or empty" } }]
+
+ts = msg.payload.ts
+values = msg.payload.values
+
+// OUTPUT 1 — Gateway MQTT para TB
+gatewayPayload = {}
+for each (tag, value) in values:
+    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }]
+
+mqttMsg = { payload: JSON.stringify(gatewayPayload), topic: "v1/gateway/telemetry", qos: 1 }
+
+// OUTPUT 2 — ML inference (si URL configurada)
+if flow.ML_INFERENCE_URL:
+    mlMsg = {
+      payload: { ts: ts, sensors: values },
+      url: flow.ML_INFERENCE_URL,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      rejectUnauthorized: true,
+      timeout: 5000
+    }
+else:
+    mlMsg = null  // salida 2 no emite nada
+
+return [mqttMsg, mlMsg, null]
+```
+
+### D.5 — Ejemplo end-to-end con datos reales de ESAMUR
+
+Input del OPC Client (`POST /api/opc-ingest`):
+
+```json
+{
+  "ts": 1776326159190,
+  "values": {
+    "POT_CCM": 300.0,
+    "TURB1": 0.0,
+    "CAUDAL_PURGA": 0.0318,
+    "REDOX_SAL": 490.8854,
+    "CLORO_SAL": 0.5411,
+    "FT1": 1322.2222,
+    "pH_Entrada": 7.6360,
+    "SH2_AguaBruta": 3.4722,
+    "reserva4": 81.7130
+  }
+}
+```
+
+Output 1 (MQTT publish a TB en topic `v1/gateway/telemetry`):
+
+```json
+{
+  "POT_CCM": [{"ts": 1776326159190, "values": {"value": 300.0}}],
+  "TURB1": [{"ts": 1776326159190, "values": {"value": 0.0}}],
+  "CAUDAL_PURGA": [{"ts": 1776326159190, "values": {"value": 0.0318}}],
+  "REDOX_SAL": [{"ts": 1776326159190, "values": {"value": 490.8854}}],
+  "CLORO_SAL": [{"ts": 1776326159190, "values": {"value": 0.5411}}],
+  "FT1": [{"ts": 1776326159190, "values": {"value": 1322.2222}}],
+  "pH_Entrada": [{"ts": 1776326159190, "values": {"value": 7.6360}}],
+  "SH2_AguaBruta": [{"ts": 1776326159190, "values": {"value": 3.4722}}],
+  "reserva4": [{"ts": 1776326159190, "values": {"value": 81.7130}}]
+}
+```
+
+TB auto-provisiona cualquier device que no exista (y luego se le
+asigna el device profile `"ESAMUR Device"` que su rule chain gestiona).
+
+Output 2 (POST a ML inference):
+
+```
+POST <flow.ML_INFERENCE_URL>/api/inference HTTP/1.1
+Content-Type: application/json
+
+{
+  "ts": 1776326159190,
+  "sensors": {
+    "POT_CCM": 300.0,
+    "TURB1": 0.0,
+    "CAUDAL_PURGA": 0.0318,
+    "REDOX_SAL": 490.8854,
+    "CLORO_SAL": 0.5411,
+    "FT1": 1322.2222,
+    "pH_Entrada": 7.6360,
+    "SH2_AguaBruta": 3.4722,
+    "reserva4": 81.7130
+  }
+}
+```
+
+Respuesta del servicio ML: ignorada por NR (el servicio la procesa y
+envía resultados a TB y blockchain por su propio camino).
+
+### D.6 — Dependencias externas y cuándo se pueden resolver
+
+| Dependencia | Bloquea | Resuelto cuando |
+|---|---|---|
+| Neoradix adapta su cliente HTTP al contrato API 1 | Pruebas E2E de Fase 5 con cliente real | Neoradix confirma y redeploya su OPC Client |
+| Hostname y puerto del servicio ML (`flow.ML_INFERENCE_URL`) | Inferencia en caliente. **No bloquea Fase 2** (salida 2 queda como fire-and-forget con URL configurable; fallback silencioso si no set) | Se contrate o construya el servicio ML y se deploye con URL conocida |
+| Implementación del servicio ML que acepte el contrato API 2 | Inferencia real. No bloquea Fase 2 | Servicio implementa `/api/inference` aceptando el body especificado |
+
+Fase 2 puede implementarse **hoy** con las dos salidas activas. La
+salida 1 (MQTT → TB) se prueba E2E contra el entorno local (Fase 0/1
+validaron la viabilidad). La salida 2 (HTTP → ML) se prueba con un
+mock local (ej. `mitmproxy` o un endpoint dummy) o se deja silenciada
+hasta que el servicio exista.
