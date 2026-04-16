@@ -1,0 +1,941 @@
+# PLAN-001: Implementación Pipeline v2 — NR pre-procesador + Gateway MQTT
+
+- **Date:** 2026-04-15 (última actualización: 2026-04-16 — Fase 0 completada)
+- **ADRs de referencia:** [ADR-001](ADR-001-current-pipeline.md), [ADR-002](ADR-002-aggregation-store-forward.md), [ADR-003](ADR-003-pipeline-v2-nr-gateway-mqtt.md)
+- **Objetivo:** migrar el pipeline de ingestión de la arquitectura v1 (5 hops HTTP, fan-out en NR post-TB) a v2 (2 hops, NR como pre-procesador, Gateway MQTT API)
+- **Constraint principal:** cero cambios en el OPC Client de Neoradix
+- **Estado de ejecución:**
+  - Fase 0 — ✅ **COMPLETADA (2026-04-16)**, 4/4 criterios validados. Ver §Resultado Fase 0.
+  - Fase 1 a 5 — pendientes.
+
+---
+
+## Resumen de fases
+
+```
+Fase 0 — PoC Gateway MQTT API              [1 día]     ← ✅ COMPLETADA 2026-04-16
+Fase 1 — Docker Compose + NR endpoint      [medio día] ← NR acepta HTTP del OPC
+Fase 2 — Flow NR: parse + MQTT + ML out    [medio día] ← core del cambio
+Fase 3 — TB: Gateway device + config       [medio día] ← TB recibe via Gateway
+Fase 4 — Eliminar ETLflows + buckets       [medio día] ← limpieza de capa de agregación
+Fase 5 — Tests E2E + cleanup legacy        [1 día]     ← validar + limpiar
+```
+
+Cada fase tiene un criterio de aceptación verificable. No avanzar a la
+siguiente sin cumplirlo.
+
+---
+
+## Fase 0 — PoC: Gateway MQTT API contra TB CE 4.1
+
+**Objetivo:** verificar que la Gateway MQTT API funciona como esperamos en
+TB CE 4.1 antes de escribir una sola línea de código de producción.
+
+### Tareas
+
+```bash
+# 0.1 — Levantar TB CE 4.1 limpio (si no está ya corriendo)
+# NOTA (2026-04-16): el compose de TB vive en truedata-thingsboard/, no en base/.
+# El repo UCAM no tiene un monorepo "base/" como asumía este plan al redactarse.
+# Ver Apéndice A para estructura real del entorno.
+cd truedata-thingsboard/
+docker compose up -d
+
+# 0.2 — Crear un device tipo Gateway en TB
+#   UI: Devices → + → Name: "OPC-Gateway-PoC" → marcar checkbox "Is gateway"
+#   Copiar el access token generado (e.g., "poc-gateway-token-123")
+
+# 0.3 — Probar publish MQTT manual con mosquitto
+# Instalar mosquitto-clients si no disponible:
+# sudo apt-get install -y mosquitto-clients
+
+# 0.3a — Conectar el gateway
+mosquitto_pub -h localhost -p 1883 \
+  -u "poc-gateway-token-123" \
+  -t "v1/gateway/connect" \
+  -m '{"device":"TestSensor_Q_SALIDA_D1"}'
+
+# 0.3b — Publicar telemetría para 2 devices en un solo mensaje
+mosquitto_pub -h localhost -p 1883 \
+  -u "poc-gateway-token-123" \
+  -t "v1/gateway/telemetry" \
+  -m '{
+    "TestSensor_Q_SALIDA_D1": [{"ts": 1713200074000, "values": {"value": 42.3}}],
+    "TestSensor_CE_SALIDA_D1": [{"ts": 1713200074000, "values": {"value": 1200.5}}]
+  }'
+
+# 0.3c — Verificar en TB:
+#   - ¿Se crearon los 2 devices automáticamente?
+#   - ¿Tienen el ts correcto (client-side, no server-side)?
+#   - ¿Qué device profile se les asignó?
+#   - ¿La rule chain del device profile se ejecuta?
+
+# 0.4 — Probar con 27 devices simultáneos (simular un scan FR_ARAGON)
+#   Generar JSON con los 27 tags y publicar. Verificar que todos llegan.
+
+# 0.5 — Probar QoS 1 (at-least-once)
+mosquitto_pub -h localhost -p 1883 \
+  -u "poc-gateway-token-123" \
+  -t "v1/gateway/telemetry" \
+  -q 1 \
+  -m '{"TestSensor_Q_SALIDA_D1": [{"ts": 1713200075000, "values": {"value": 43.1}}]}'
+# Verificar PUBACK recibido
+
+# 0.6 — Cleanup PoC
+# Borrar devices TestSensor_* creados durante la PoC
+```
+
+### Criterio de aceptación Fase 0
+
+- [ ] 27 devices creados automáticamente en TB con un solo MQTT publish
+- [ ] Timestamps client-side preservados (no reescritos por TB)
+- [ ] QoS 1 funciona (PUBACK recibido)
+- [ ] Rule chain del device profile se ejecuta al recibir telemetría via Gateway
+
+### Si la PoC falla
+
+Si alguno de los 4 criterios no se cumple, **STOP**. Documentar el fallo
+en ADR-003 §5 como riesgo materializado y evaluar alternativas (TBEL
+fan-out en rule chain, o mantener v1 con bugfixes).
+
+### Resultado Fase 0 (ejecutada 2026-04-16)
+
+PoC ejecutada con éxito. **4/4 criterios de aceptación validados con
+evidencia directa.**
+
+| # | Criterio | Evidencia |
+|---|---|---|
+| 1 | 27 devices creados automáticamente con un solo MQTT publish | Un único `mosquitto_pub` con payload de 2150 bytes (27 entradas de device) → 27 devices `TestSensor27_*` aparecieron en `/api/tenant/deviceInfos` sin haber sido pre-creados |
+| 2 | Timestamps client-side preservados (no reescritos por TB) | `ts` enviado = `ts` almacenado en `values/timeseries` para los 27 devices (match exacto, cero mismatches) |
+| 3 | QoS 1 funciona (PUBACK recibido) | `mosquitto_pub -d -q 1` muestra `PUBLISH (q1)` → `PUBACK (Mid:1, RC:0)` |
+| 4 | Rule chain del device profile se ejecuta | Los valores aparecen como timeseries (no solo como mensajes MQTT crudos), lo que implica que el nodo `Save Timeseries` de la default rule chain se ejecutó. Verificado sin necesidad de modificar rule chains |
+
+**Conclusión:** el Gateway MQTT API de TB CE 4.1 se comporta como promete
+la documentación. El refactor v2 (ADR-003) es técnicamente viable. Sin
+bloqueos técnicos para Fase 1 desde el lado de TB.
+
+**Artefactos generados durante la PoC** (borrar al iniciar Fase 1 o cuando
+se considere oportuno; no interfieren con nada):
+- Device `OPC-Gateway-PoC` (id `a24d4bc0-3969-11f1-9411-038794afcd00`).
+- 2 devices `TestSensor_Q_SALIDA_D1`, `TestSensor_CE_SALIDA_D1` (test inicial de 2 devices).
+- 27 devices `TestSensor27_*` (test de escala con scan completo).
+
+**Hallazgos colaterales del entorno (Fase 0 descubrió bugs latentes del
+compose de TB que nunca se habían disparado porque el compose no había
+arrancado):** ver Apéndice A.
+
+---
+
+## Fase 1 — Docker Compose: NR acepta HTTP del OPC Client
+
+**Objetivo:** configurar el entorno Docker para que NR sea accesible por
+HTTP desde el OPC Client y pueda hablar MQTT con TB.
+
+### Contexto de red Docker actual (actualizado 2026-04-16 tras Fase 0)
+
+El repo UCAM tiene **dos `docker-compose.yml` separados** (no un único
+compose en `base/`) que comparten una red Docker externa. Post-Fase 0,
+los composes están con IPs dinámicas y volúmenes nombrados (ver
+Apéndice A para los fixes aplicados).
+
+```yaml
+# truedata-thingsboard/docker-compose.yml (estado post-Fase 0)
+services:
+  thingsboard:
+    image: thingsboard/tb-postgres:4.1.0
+    ports:
+      - "9090:9090"   # HTTP API
+      - "1883:1883"   # MQTT broker
+      - "7070:7070"
+      - "5683-5688:5683-5688/udp"
+    environment:
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      DATABASE_USER: thingsboard
+      DATABASE_PASSWORD: thingsboard_password
+      # ... (resto)
+    volumes:
+      - tb-data:/data
+      - tb-logs:/var/log/thingsboard
+    networks:
+      - iot_network
+    depends_on: [db]
+
+  db:
+    image: postgres:13
+    container_name: postgres-db
+    # ... usuario/pwd Postgres: thingsboard / thingsboard_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - iot_network
+
+networks:
+  iot_network:
+    external: true
+    name: truedata_iot_network   # red creada fuera con `docker network create`
+
+volumes:
+  tb-data:
+  tb-logs:
+  postgres-data:
+```
+
+```yaml
+# truedata-nodered/docker-compose.yml (estado post-Fase 0)
+services:
+  nodered_tb:
+    image: nodered/node-red:3.1.9
+    ports:
+      - "1880:1880"
+    volumes:
+      - ./data:/data
+      - ./settings.js:/data/settings.js:ro
+    networks:
+      - iot_network
+    user: "0:0"
+
+networks:
+  iot_network:
+    external: true
+    name: truedata_iot_network
+```
+
+**Nota de arquitectura (deuda técnica a decidir en Fase 1):** la
+estructura actual de "dos composes separados que comparten red externa"
+funciona pero fuerza a crear la red manualmente (`docker network create
+truedata_iot_network`) y a levantarlos por separado. Una estructura más
+limpia sería un `docker-compose.yml` general en la raíz + un
+`docker-compose.override.yml` en cada subdirectorio para permitir levantar
+servicios de forma independiente. Decidir al inicio de Fase 1.
+
+### Tareas
+
+**1.1 — Verificar que NR puede resolver `thingsboard` por DNS Docker**
+
+```bash
+# Desde dentro del container de NR:
+docker exec -it nodered ping -c 3 thingsboard
+# Debe resolver al IP interno de TB
+# El broker MQTT de TB está en thingsboard:1883 (red interna)
+```
+
+No se necesitan cambios de docker-compose para esto — NR y TB ya comparten
+red. NR ya expone el puerto 1880 para sus endpoints HTTP. El OPC Client
+ya POSTea a NR en el pipeline actual (PrevioRawFlow).
+
+**1.2 — Verificar/añadir endpoint HTTP en NR para recibir bulk del OPC**
+
+Si el OPC Client actualmente POSTea a TB (device Raw), habrá que cambiar
+la URL destino. Pero si NR ya expone un endpoint HTTP que el OPC usa...
+verificar.
+
+```
+# Pregunta clave a Neoradix:
+# ¿A qué URL POSTea el OPC Client?
+#   a) Directo a TB: http://thingsboard:9090/api/v1/{rawToken}/telemetry
+#   b) A NR: http://nodered:1880/endpoint/previoXXX
+#   c) A TB, y luego TB llama a NR via rule chain
+#
+# Si (a) o (c): el cambio es redirigir el POST del OPC a NR
+#   → Neoradix cambia UNA variable de configuración (URL destino)
+#   → O: NR escucha en el mismo path que TB usaba (/api/v1/{token}/telemetry)
+#
+# Si (b): NR ya recibe directo. Solo hay que cambiar el flow de NR.
+```
+
+**1.3 — Crear endpoint HTTP-in en NR (si no existe)**
+
+Esto se hará como un NR flow en Fase 2, pero el compose debe garantizar
+que el puerto 1880 del container NR es accesible para el OPC Client.
+
+### Criterio de aceptación Fase 1
+
+- [ ] NR resuelve `thingsboard:1883` (MQTT broker) desde su container
+- [ ] Un `curl` desde fuera del compose alcanza el endpoint HTTP de NR
+- [ ] Documentado cómo el OPC Client debe apuntar a NR (URL exacta)
+
+---
+
+## Fase 2 — Flow Node-RED: parse + Gateway MQTT payload
+
+**Objetivo:** implementar el flow core que recibe el POST bulk del OPC
+Client, extrae tags + timestamp, construye el payload Gateway MQTT, y
+publica.
+
+### Hecho confirmado
+
+El OPC Client de Neoradix envía **1 POST con los N tags del scan**
+(27 en FR_ARAGON). Es el motivo por el que existía el patrón Raw Device
++ fan-out en NR. Esto significa que **no necesitamos debounce/join** —
+el OPC Client ya agrupa los tags por scan. El jitter intra-scan (ms entre
+tags) no existe a nivel de NR porque llegan como un solo JSON.
+
+### Estructura del flow (5 nodos)
+
+```
+[HTTP-in]                          Recibe POST bulk del OPC Client
+    │
+    ▼
+[function: parse + build payloads] Extrae tags + ts PLC, construye:
+    │                                - Gateway MQTT JSON (para TB)
+    │                                - ML inference body (para modelo)
+    │
+    ├──► Salida 1: [mqtt-out]      Publica a v1/gateway/telemetry (QoS 1)
+    │                               → TB almacena per-device (source of truth)
+    │
+    ├──► Salida 2: [http-request]  POST al servicio ML inference
+    │                               → ML devuelve resultado → TB (otro path)
+    │
+    └──► Salida 3 (error): [http-response 400]
+    │
+    ▼
+[http-response]                    Responde 200/500 al OPC Client
+```
+
+NR actúa como router: un único punto de entrada, dos destinos paralelos.
+TB es source of truth (persistencia). ML inference recibe el dato fresco
+sin pasar por TB. Los resultados de inferencia vuelven a TB por su propio
+path (el servicio ML tiene su propio endpoint a TB), que ya está
+implementado y no nos afecta.
+
+### 2.1 — Nodo HTTP-in
+
+```json
+{
+  "type": "http in",
+  "url": "/api/opc-ingest",
+  "method": "post",
+  "name": "OPC Bulk Ingest"
+}
+```
+
+**Nota:** la URL exacta depende de lo que Neoradix tenga configurado.
+Si su cliente apunta a `/api/v1/{token}/telemetry`, considerar usar esa
+misma URL para minimizar cambios en Neoradix.
+
+### 2.2 — Function: parse + build Gateway MQTT payload (único function node)
+
+El payload del OPC Client llega como JSON. Formato esperado (verificar
+con Neoradix — puede ser distinto):
+
+```javascript
+// Formato A: objeto plano con ts
+// {"Q_SALIDA_D1": 42.3, "CE_SALIDA_D1": 1200, ..., "ts": 1713200074000}
+
+// Formato B: array de {item, value, datetime} (formato del dump SQL)
+// [{"item": "Q_SALIDA_D1", "value": "42.3", "datetime": "2026-01-16T09:49:00.123"}]
+
+// Formato C: TB telemetry format
+// {"ts": 1713200074000, "values": {"Q_SALIDA_D1": 42.3, "CE_SALIDA_D1": 1200}}
+
+// ACCIÓN: obtener un ejemplo real del payload del OPC Client de Neoradix
+// antes de implementar este nodo. Sin esto, el parse es especulativo.
+```
+
+Function node (placeholder — adaptar al formato real):
+
+```javascript
+// parse-and-build-payloads (function node — 3 outputs)
+// Input:  msg.payload del HTTP POST del OPC Client (1 POST = 1 scan = 27 tags)
+// Output 1: msg → mqtt-out (Gateway MQTT payload para TB)
+// Output 2: msg → http-request (body para ML inference API)
+// Output 3: msg → http-response (error 400, solo si payload inválido)
+
+const raw = msg.payload;
+let tags = {};
+let scanTs = null;
+
+// ============================================================
+// PASO 1: PARSE — adaptar este bloque al formato real de Neoradix
+// ============================================================
+if (raw.ts && raw.values) {
+    // Formato C (TB telemetry format)
+    scanTs = raw.ts;
+    tags = raw.values;
+} else if (Array.isArray(raw)) {
+    // Formato B (array de items)
+    raw.forEach(item => {
+        tags[item.item] = parseFloat(item.value) || item.value;
+        if (!scanTs && item.datetime) {
+            scanTs = new Date(item.datetime).getTime();
+        }
+    });
+} else if (raw.ts) {
+    // Formato A (objeto plano con ts)
+    scanTs = raw.ts;
+    const { ts, ...rest } = raw;
+    tags = rest;
+} else {
+    // Fallback: objeto plano sin ts → Date.now() como último recurso
+    node.warn("OPC payload sin timestamp — usando server-side ts");
+    scanTs = Date.now();
+    tags = raw;
+}
+
+// Validación básica
+const tagCount = Object.keys(tags).length;
+if (tagCount === 0) {
+    const errMsg = { statusCode: 400, payload: { status: "error", reason: "empty payload" } };
+    return [null, null, errMsg]; // salida 3 → http-response con 400
+}
+
+// ============================================================
+// PASO 2: BUILD GATEWAY MQTT PAYLOAD (salida 1 → TB)
+// ============================================================
+const gatewayPayload = {};
+for (const [tagName, value] of Object.entries(tags)) {
+    gatewayPayload[tagName] = [{
+        "ts": scanTs,
+        "values": { "value": value }
+    }];
+}
+
+const mqttMsg = {
+    payload: JSON.stringify(gatewayPayload),
+    topic: "v1/gateway/telemetry",
+    qos: 1,
+    _tagCount: tagCount
+};
+
+// ============================================================
+// PASO 3: BUILD ML INFERENCE BODY (salida 2 → servicio ML)
+// ============================================================
+// El body que espera /api/inference debe contener todos los sensores
+// juntos. Adaptar la estructura al contrato de la API de inferencia.
+const mlBody = {
+    "ts": scanTs,
+    "sensors": tags
+    // NOTA: si la API espera otro formato (array, nombres distintos,
+    // subset de tags), adaptar aquí. Verificar con el equipo ML.
+};
+
+const mlMsg = {
+    payload: mlBody,
+    url: flow.get("ML_INFERENCE_URL") || "http://ml-inference:5000/api/inference",
+    method: "POST",
+    headers: { "Content-Type": "application/json" }
+};
+
+return [mqttMsg, mlMsg, null]; // salida 1 → TB, salida 2 → ML, sin error
+```
+
+**Nota sobre las 3 salidas:** el function node tiene 3 outputs:
+- Salida 1 → mqtt-out (persistencia en TB)
+- Salida 2 → http-request (inferencia ML)
+- Salida 3 → http-response directa (error 400, sin publicar a ningún destino)
+
+**Nota sobre la URL de ML:** la URL del servicio de inferencia se lee de
+una variable de flow (`flow.ML_INFERENCE_URL`) con fallback a un default.
+Esto permite configurarla por entorno sin tocar el flow.
+
+### 2.3 — MQTT-out
+
+Configuración del nodo MQTT broker en NR:
+
+```json
+{
+  "type": "mqtt-broker",
+  "name": "TB Gateway MQTT",
+  "broker": "thingsboard",
+  "port": "1883",
+  "clientid": "nodered-gateway-client",
+  "usetls": false,
+  "credentials": {
+    "user": "<<GATEWAY_DEVICE_ACCESS_TOKEN>>",
+    "password": ""
+  }
+}
+```
+
+Y el nodo mqtt-out:
+
+```json
+{
+  "type": "mqtt out",
+  "topic": "v1/gateway/telemetry",
+  "qos": "1",
+  "retain": "",
+  "broker": "TB Gateway MQTT"
+}
+```
+
+**Cuestión de naming:** los devices en TB hoy se llaman como los tags
+del PLC (Q_SALIDA_D1, CE_SALIDA_D1, etc.) o tienen otro naming convention
+(prefijo cliente, sufijo tipo)? Verificar en el deploy pipeline:
+
+```bash
+# Buscar en el CSV de devices del cliente FR_ARAGON
+cat deploy/FR_ARAGON/DeviceImport_FR_ARAGON.csv | head -5
+```
+
+Si los nombres no coinciden, añadir un mapeo estático en el function node
+o en un fichero de config externo leído al arrancar.
+
+### 2.4 — HTTP-request: ML inference (salida 2)
+
+```json
+{
+  "type": "http request",
+  "method": "POST",
+  "ret": "obj",
+  "paytoqs": "ignore",
+  "url": "",
+  "name": "ML Inference API"
+}
+```
+
+La URL viene en `msg.url` desde el function node (§2.2). El nodo
+http-request usa `msg.payload` como body y `msg.headers` para
+Content-Type.
+
+**Importante sobre errores:** si el servicio ML no responde o devuelve
+error, eso **no debe bloquear** la ingestión en TB. El mqtt-out (salida 1)
+y el http-request (salida 2) son paralelos — un fallo en ML no afecta
+al almacenamiento en TB. NR ejecuta ambas salidas de forma independiente.
+
+**Resultado de la inferencia:** el servicio ML se encarga de enviar sus
+resultados a TB (devices `estimaciones_modelo`, etc.) y al servicio
+blockchain. Ese path ya está implementado y no forma parte de este flow.
+NR solo dispara la inferencia; no procesa la respuesta.
+
+### 2.5 — HTTP-response
+
+```json
+{
+  "type": "http response",
+  "statusCode": "200",
+  "name": "ACK to OPC Client"
+}
+```
+
+**Importante:** el HTTP response debe enviarse DESPUÉS del MQTT publish
+exitoso, no antes. Si el MQTT publish falla, responder 500 para que el
+OPC Client (si tiene retry) reintente.
+
+Para esto, encadenar mqtt-out → function check → http-response:
+
+```javascript
+// post-mqtt-check (function node entre mqtt-out y http-response)
+msg.statusCode = 200;
+msg.payload = { "status": "ok", "tags": msg._tagCount || 0 };
+return msg;
+```
+
+Los errores 400 (payload vacío) ya se manejan en la salida 2 del function
+node principal (§2.2). Los errores MQTT se manifestarán como timeout en
+el OPC Client si NR no puede publicar.
+
+### Criterio de aceptación Fase 2
+
+- [ ] POST a `/api/opc-ingest` con payload de 27 tags devuelve 200
+- [ ] Los 27 tags aparecen como telemetría en los 27 devices de TB
+- [ ] Todos los tags del mismo scan tienen el MISMO timestamp (client-side)
+- [ ] El servicio ML recibe un POST con los 27 sensores juntos
+- [ ] Si ML está caído, TB sigue recibiendo datos normalmente
+- [ ] POST con payload vacío o malformado devuelve 400 (no crash)
+
+---
+
+## Fase 3 — ThingsBoard: Gateway device + configuración
+
+**Objetivo:** crear el device Gateway en TB y configurar el device profile
+para que los sub-devices creados via Gateway tengan el profile correcto.
+
+### Tareas
+
+**3.1 — Crear Gateway device en TB**
+
+```bash
+# Via TB REST API (automatizable en deploy pipeline)
+
+# 1. Login para obtener JWT
+TB_HOST="http://localhost:8080"
+JWT=$(curl -s -X POST "$TB_HOST/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"tenant@thingsboard.org","password":"tenant"}' \
+  | jq -r '.token')
+
+# 2. Crear device con flag "gateway"
+GATEWAY_ID=$(curl -s -X POST "$TB_HOST/api/device" \
+  -H "Content-Type: application/json" \
+  -H "X-Authorization: Bearer $JWT" \
+  -d '{
+    "name": "OPC-Gateway",
+    "type": "Gateway",
+    "additionalInfo": {
+      "gateway": true,
+      "overwriteActivityTime": false,
+      "description": "Gateway MQTT para ingestión OPC. Ver ADR-003."
+    }
+  }' | jq -r '.id.id')
+
+# 3. Obtener access token del gateway
+GATEWAY_TOKEN=$(curl -s "$TB_HOST/api/device/$GATEWAY_ID/credentials" \
+  -H "X-Authorization: Bearer $JWT" \
+  | jq -r '.credentialsId')
+
+echo "Gateway Device ID: $GATEWAY_ID"
+echo "Gateway Token: $GATEWAY_TOKEN"
+# → Este token va en la config MQTT de NR (Fase 2 §2.5)
+```
+
+**3.2 — Configurar device profile por defecto**
+
+Los devices creados por auto-provisioning del Gateway reciben el profile
+por defecto del tenant. Si el profile por defecto no es el correcto
+(e.g., necesitan `profile_device` en vez de `default`):
+
+```bash
+# Opción A: cambiar el default device profile del tenant
+# (afecta a TODOS los devices nuevos, no solo los del gateway)
+# → NO RECOMENDADO si hay otros device profiles en uso
+
+# Opción B: pre-crear los devices con el profile correcto
+# → RECOMENDADO. El deploy pipeline ya hace esto.
+# Los devices deben existir ANTES de que el Gateway publique.
+# El Gateway solo añade telemetría, no crea devices de producción.
+```
+
+**3.3 — Verificar que devices existentes reciben telemetría via Gateway**
+
+```bash
+# Publicar para un device que YA EXISTE en TB
+mosquitto_pub -h localhost -p 1883 \
+  -u "$GATEWAY_TOKEN" \
+  -t "v1/gateway/connect" \
+  -m '{"device":"Q_SALIDA_D1"}'
+
+mosquitto_pub -h localhost -p 1883 \
+  -u "$GATEWAY_TOKEN" \
+  -t "v1/gateway/telemetry" \
+  -m '{"Q_SALIDA_D1": [{"ts": 1713200090000, "values": {"value": 55.5}}]}'
+
+# Verificar en TB UI → Devices → Q_SALIDA_D1 → Latest telemetry
+# ¿Aparece value=55.5 con ts correcto?
+```
+
+### Criterio de aceptación Fase 3
+
+- [ ] Device "OPC-Gateway" creado con flag gateway en TB
+- [ ] Token del Gateway configurado en NR mqtt-broker node
+- [ ] Telemetría publicada via Gateway llega a devices pre-existentes
+- [ ] Rule chain del device profile se ejecuta normalmente
+
+---
+
+## Fase 4 — Eliminar capa de agregación (ETLflows + buckets)
+
+**Objetivo:** eliminar ETLflows, profile_buckets, los 6 devices bucket y
+buckets_root_rule_chain. Con v2, la motivación de estas piezas desaparece:
+
+- **Jitter:** resuelto por construcción (1 POST = 1 ts para todos los tags)
+- **Agregación estadística:** inútil con cadencia 34s (0-1 sample por ventana)
+- **Fan-in para ML:** resuelto por NR (salida 2 del function node alimenta
+  ML inference directamente con los 27 sensores juntos)
+
+### 4.1 — Verificar que ML inference recibe datos correctamente
+
+Antes de eliminar nada, confirmar que el servicio ML funciona con la
+alimentación directa desde NR (Fase 2, salida 2). Si ML sigue
+necesitando leer de los bucket devices por algún otro motivo, **STOP**.
+
+```bash
+# Test: enviar scan via NR, verificar que ML inference recibe el body
+curl -X POST http://localhost:1880/api/opc-ingest \
+  -H "Content-Type: application/json" \
+  -d '{"ts": 1713200074000, "values": {"Q_SALIDA_D1": 42.3, ...}}'
+
+# Verificar en logs del servicio ML que recibió el POST con 27 sensores
+docker logs ml-inference --tail 5
+```
+
+### 4.2 — Eliminar del deploy pipeline
+
+```bash
+# En base/deploy/Plantillas/:
+# - Eliminar o mover a legacy/:
+#   ETLNodeRed/ETLflows.json
+#   DeviceProfiles/profile_buckets.json  (verificar nombre exacto)
+#   DeviceRuleChains/buckets_root_rule_chain.json
+
+# En env_client.py / scripts de provisioning:
+# - Dejar de crear los 6 devices bucket por cliente
+# - Dejar de crear profile_buckets
+# - Dejar de importar buckets_root_rule_chain
+
+# En devices_root_rule_chain.json:
+# - Eliminar el TbRestApiCallNode que llamaba a NR endpoint /agregarXXX
+#   (ya no hay ETLflows que activar)
+```
+
+### 4.3 — Eliminar flows de NR
+
+```bash
+# ETLflows.json se elimina del deploy de flows NR
+# PrevioRawFlow.json también (fan-out legacy, ya sustituido por Gateway MQTT)
+# Solo quedan: flow de ingestión v2 (nuevo) + Critical Levels flows
+```
+
+### Criterio de aceptación Fase 4
+
+- [ ] ML inference recibe datos directamente de NR (no de bucket devices)
+- [ ] Deploy pipeline ya no provisiona profile_buckets ni 6 bucket devices
+- [ ] ETLflows.json y PrevioRawFlow.json eliminados de los flows de NR
+- [ ] TbRestApiCallNode de ETL eliminado de devices_root_rule_chain
+- [ ] El pipeline funciona sin los componentes eliminados (test E2E Fase 5)
+
+---
+
+## Fase 5 — Tests E2E + cleanup legacy
+
+**Objetivo:** validar el pipeline completo v2 de extremo a extremo.
+
+### 5.1 — Test E2E
+
+```bash
+# Usar el simulator (MR-3) como fuente de datos
+# Modificar el simulator para que POSTee a NR en vez de a TB Raw device
+
+# Test 1: scan normal (27 tags, formato FR_ARAGON)
+curl -X POST http://localhost:1880/api/opc-ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ts": 1713200074000,
+    "values": {
+      "Q_SALIDA_D1": 42.3,
+      "Q_SALIDA_D2": 0.0,
+      "CE_SALIDA_D1": 1200.5,
+      "PH_D1": 11.4,
+      "Heart_Bit": true,
+      "DI_00": false,
+      ... (27 tags)
+    }
+  }'
+# Verificar:
+#   - 200 OK
+#   - datos en los 27 devices de TB (con ts client-side correcto)
+#   - ML inference recibió POST con los 27 sensores
+
+# Test 2: payload vacío
+curl -X POST http://localhost:1880/api/opc-ingest \
+  -H "Content-Type: application/json" -d '{}'
+# Verificar: 400, no crash de NR
+
+# Test 3: TB caído, ML inference vivo
+docker compose stop thingsboard
+curl -X POST http://localhost:1880/api/opc-ingest \
+  -H "Content-Type: application/json" -d '{ ... }'
+# Verificar: NR intenta ambas salidas. ML puede recibir aunque TB esté caído.
+docker compose start thingsboard
+
+# Test 4: ML inference caído, TB vivo
+docker compose stop ml-inference  # o nombre real del servicio
+curl -X POST http://localhost:1880/api/opc-ingest \
+  -H "Content-Type: application/json" -d '{ ... }'
+# Verificar: TB recibe datos normalmente. Error de ML no bloquea ingestión.
+docker compose start ml-inference
+
+# Test 5: dos scans rápidos (verificar que no se mezclan)
+# Enviar scan A (ts=T1) y scan B (ts=T1+34000) con <100ms entre ellos
+# Verificar: ambos scans correctos en TB con ts distintos, ML recibe ambos
+```
+
+### 5.2 — Cleanup legacy (verificar que Fase 4 completó la eliminación)
+
+```bash
+# Verificar que ya no existen en el deploy:
+# - ETLflows.json (eliminado en Fase 4)
+# - PrevioRawFlow.json (eliminado en Fase 4)
+# - profile_buckets (eliminado en Fase 4)
+# - buckets_root_rule_chain (eliminado en Fase 4)
+
+# Verificar que estos SÍ siguen:
+# - profile_raw + raw_root_rule_chain → marcar DEPRECATED
+#   (se mantienen por si rollback, borrado real tras 2 semanas en producción)
+
+# En el deploy pipeline, verificar:
+# - Ya no provisiona Raw device ni bucket devices
+# - Sí provisiona Gateway device
+# - Sí provisiona per-sensor devices (pre-creación)
+```
+
+### 5.3 — Documentación
+
+- [ ] Actualizar `base/deploy/README.md` con el nuevo flow de ingestión
+- [ ] Actualizar `base/nodered/README.md` con descripción del flow v2
+- [ ] Commit de ADR-003 al repo UCAM
+- [ ] Documentar URL del servicio ML inference en README o .env
+
+### Criterio de aceptación Fase 5
+
+- [ ] 5 tests E2E pasan
+- [ ] Componentes de agregación eliminados (Fase 4)
+- [ ] Componentes Raw marcados deprecated (no borrados)
+- [ ] Documentación actualizada
+- [ ] Deploy pipeline provisiona Gateway device
+
+---
+
+## Dependencias externas (bloquean fases)
+
+| Dependencia | Bloquea | Acción |
+|---|---|---|
+| Formato exacto del payload del OPC Client | Fase 2 (parse function) | Pedir ejemplo JSON real a Neoradix |
+| URL a la que POSTea el OPC Client | Fase 1/2 (endpoint NR) | Confirmar con Neoradix |
+| Naming de devices en TB vs tags OPC | Fase 2 (build function) | Verificar en DeviceImport CSV |
+| URL + contrato del servicio ML inference | Fase 2 (salida 2) | Confirmar con equipo ML |
+| Body que espera `/api/inference` | Fase 2 (build ML body) | Confirmar con equipo ML |
+| Respuesta de Neoradix sobre store-and-forward | Producción (no bloquea fases) | ADR-002 R2 |
+
+---
+
+## Rollback
+
+Si en cualquier fase algo falla de forma irrecuperable:
+
+1. NR vuelve a exponer solo los flows legacy (PrevioRawFlow + ETLflows)
+2. OPC Client vuelve a apuntar a TB Raw device
+3. Se borran: Gateway device, mqtt-broker config en NR, flow nuevo
+4. Estado = v1 con los bugfixes de `feature/base/pipeline-legacy-bugfixes`
+
+El rollback es posible porque no borramos nada legacy hasta Fase 5,
+y en Fase 5 solo marcamos deprecated, no borramos. Borrado real solo
+tras 2+ semanas en producción validada.
+
+---
+
+## Checklist de información necesaria antes de empezar
+
+Antes de ejecutar Fase 1, necesitas estas respuestas:
+
+- [x] **¿1 POST con N tags o N POSTs con 1 tag?** — **CONFIRMADO: 1 POST
+      con los N tags del scan.** No necesitamos debounce/join en NR.
+- [ ] **Formato del payload del OPC Client** — pedir un ejemplo JSON real
+      a Neoradix (¿es formato TB telemetry? ¿Array de items? ¿Otro?)
+- [ ] **URL actual a la que POSTea el OPC Client** — para saber si
+      apunta a TB directo o a NR
+- [ ] **Naming de devices en TB** — verificar en DeviceImport CSV que
+      los nombres coincidan con los tag names del OPC
+- [ ] **URL del servicio ML inference** — hostname:puerto dentro de Docker
+- [ ] **Body que espera `/api/inference`** — estructura JSON exacta
+      (¿`{ts, sensors: {...}}`? ¿otro formato?)
+
+Si no tienes todas las respuestas, puedes ejecutar Fase 0 (PoC) sin
+ninguna de ellas. La PoC solo usa mosquitto contra TB.
+
+---
+
+## Apéndice A — Fixes aplicados al compose durante Fase 0 (2026-04-16)
+
+Al ejecutar Fase 0 se descubrieron cuatro bugs latentes en
+`truedata-thingsboard/docker-compose.yml` que nunca se habían disparado
+porque el compose no había arrancado realmente en este entorno (WSL2).
+Todos son pre-existentes al refactor v2 y se aplicaron como parte del
+setup de la PoC. **Este apéndice documenta qué se cambió y por qué**
+para que no se pierda contexto en futuras revisiones y para evitar
+reintroducir los mismos bugs al copiar configuración a Fase 1.
+
+### A.1 — IPs fijas → IPs dinámicas + DNS interno
+
+**Antes:**
+```yaml
+networks:
+  iot_network:
+    ipv4_address: 172.25.0.2   # y .0.3, .0.23 para los otros servicios
+```
+
+**Después:**
+```yaml
+networks:
+  - iot_network
+```
+
+**Razón:** las IPs fijas `172.25.0.0/24` colisionaban con otras redes
+Docker ya existentes en el host WSL2 (`docker network create` devolvía
+`invalid pool request: Pool overlaps with other one on this address
+space`). Además, las IPs fijas no aportaban nada funcional porque Docker
+tiene DNS interno que resuelve por nombre de servicio (`thingsboard`,
+`db`, `nodered_tb`) independientemente de la IP. La red se crea con
+`docker network create truedata_iot_network` sin `--subnet`, dejando que
+Docker elija un rango libre.
+
+### A.2 — `DATABASE_PORT: 5433` → `5432`
+
+**Razón:** la imagen `postgres:13` sin override escucha en el puerto
+default **5432**. El compose tenía `DATABASE_PORT: 5433` apuntando al
+servicio externo `db`, lo que producía timeouts de conexión. (El `5433`
+es el puerto del Postgres **embebido** en la variante `tb-postgres`,
+que es distinto — aquí se usa el `db` externo, así que aplica 5432).
+
+### A.3 — Credenciales Postgres (UI de TB vs usuario de BD)
+
+**Antes:**
+```yaml
+DATABASE_USER: tenant@thingsboard.org
+DATABASE_PASSWORD: tenant
+```
+
+**Después:**
+```yaml
+DATABASE_USER: thingsboard
+DATABASE_PASSWORD: thingsboard_password
+```
+
+**Razón:** `tenant@thingsboard.org` / `tenant` son las credenciales del
+**login UI de TB** (tenant admin default), no del usuario de Postgres.
+El servicio `db` crea el usuario `thingsboard` con password
+`thingsboard_password` (via `POSTGRES_USER`/`POSTGRES_PASSWORD`), y esas
+son las credenciales que TB debe usar para conectar a la BD. Con los
+valores antiguos, TB fallaba con "password authentication failed for
+user tenant@thingsboard.org".
+
+### A.4 — Bind mounts → named volumes
+
+**Antes:**
+```yaml
+volumes:
+  - ./tb-data:/data
+  - ./tb-logs:/var/log/thingsboard
+  - ./postgres-data:/var/lib/postgresql/data
+```
+
+**Después:**
+```yaml
+volumes:
+  - tb-data:/data
+  - tb-logs:/var/log/thingsboard
+  - postgres-data:/var/lib/postgresql/data
+# ...
+volumes:
+  tb-data:
+  tb-logs:
+  postgres-data:
+```
+
+**Razón:** en WSL2, los bind mounts desde el filesystem de Windows
+(`DrvFs`) al contenedor Linux no soportan los cambios de permisos
+(`chown`/`chmod`) que necesita Postgres para inicializar su data
+directory. Resultado: `initdb: error: could not change permissions of
+directory "/var/lib/postgresql/data": Operation not permitted`, loop
+infinito de reinicio. Los named volumes viven en el filesystem interno
+de Docker (`/var/lib/docker/volumes/...`), donde los permisos Unix
+funcionan correctamente.
+
+**Trade-off aceptado:** se pierde la capacidad de `ls ./tb-data` desde
+el host. Los volúmenes siguen siendo inspeccionables con
+`docker volume inspect` y `docker exec`.
+
+### A.5 — Observaciones no aplicadas (deuda consciente)
+
+- **Servicio `db` redundante**: la variante `thingsboard/tb-postgres`
+  incluye Postgres embebido (escuchando en `localhost:5433`). Aquí se
+  usa el servicio `db` externo — válido arquitectónicamente (BD
+  reiniciable independiente de TB), pero hace que 1 de los 2 Postgres
+  no se use. Simplificable en Fase 1 si se considera.
+- **Estructura de composes**: dos composes separados + red externa
+  compartida. Alternativa más limpia a decidir en Fase 1: compose
+  general en la raíz + overrides por servicio.
+- **Credenciales hardcoded** (`tenant`/`tenant`, `thingsboard_password`):
+  aceptables para entorno PoC/local. Deben migrarse a secrets o variables
+  de entorno antes de ningún despliegue real.
