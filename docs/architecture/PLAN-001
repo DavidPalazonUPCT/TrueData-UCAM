@@ -543,17 +543,12 @@ Y el nodo mqtt-out:
 }
 ```
 
-**Cuestión de naming:** los devices en TB hoy se llaman como los tags
-del PLC (Q_SALIDA_D1, CE_SALIDA_D1, etc.) o tienen otro naming convention
-(prefijo cliente, sufijo tipo)? Verificar en el deploy pipeline:
-
-```bash
-# Buscar en el CSV de devices del cliente FR_ARAGON
-cat deploy/FR_ARAGON/DeviceImport_FR_ARAGON.csv | head -5
-```
-
-Si los nombres no coinciden, añadir un mapeo estático en el function node
-o en un fichero de config externo leído al arrancar.
+**Cuestión de naming:** resuelta. Ver Apéndice D.1 — en v2 el nombre
+del device en TB coincide **literalmente** con el tag name del OPC
+(identidad, sin prefijo cliente ni mapeo). El function node no necesita
+tablas de conversión. Si en el futuro aparece un cliente con convención
+distinta, se introducirá una capa de mapeo configurable, pero no es
+necesario hoy.
 
 ### 2.4 — HTTP-request: ML inference (salida 2)
 
@@ -900,11 +895,11 @@ docker compose start ml-inference
 
 | Dependencia | Bloquea | Acción |
 |---|---|---|
-| Formato exacto del payload del OPC Client | Fase 2 (parse function) | Pedir ejemplo JSON real a Neoradix |
-| URL a la que POSTea el OPC Client | Fase 1/2 (endpoint NR) | Confirmar con Neoradix |
-| Naming de devices en TB vs tags OPC | Fase 2 (build function) | Verificar en DeviceImport CSV |
-| URL + contrato del servicio ML inference | Fase 2 (salida 2) | Confirmar con equipo ML |
-| Body que espera `/api/inference` | Fase 2 (build ML body) | Confirmar con equipo ML |
+| Formato exacto del payload del OPC Client | Fase 2 (parse function) | **Resuelto**: contrato definido por UCAM en Apéndice D.2 |
+| URL a la que POSTea el OPC Client | Fase 1/2 (endpoint NR) | **Resuelto**: URL canónica `POST /api/opc-ingest:1880` definida por UCAM |
+| Naming de devices en TB vs tags OPC | Fase 2 (build function) | **Resuelto**: identidad tag→device_name, ver Apéndice D.1 |
+| URL + contrato del servicio ML inference | Fase 2 (salida 2) | Contrato definido por UCAM en Apéndice D.3; URL del servicio sigue **TODO** (no bloquea Fase 2 — fallback silencioso si URL no set) |
+| Body que espera `/api/inference` | Fase 2 (build ML body) | **Resuelto**: contrato definido por UCAM en Apéndice D.3 |
 | Respuesta de Neoradix sobre store-and-forward | Producción (no bloquea fases) | ADR-002 R2 |
 
 ---
@@ -930,15 +925,17 @@ Antes de ejecutar Fase 1, necesitas estas respuestas:
 
 - [x] **¿1 POST con N tags o N POSTs con 1 tag?** — **CONFIRMADO: 1 POST
       con los N tags del scan.** No necesitamos debounce/join en NR.
-- [ ] **Formato del payload del OPC Client** — pedir un ejemplo JSON real
-      a Neoradix (¿es formato TB telemetry? ¿Array de items? ¿Otro?)
-- [ ] **URL actual a la que POSTea el OPC Client** — para saber si
-      apunta a TB directo o a NR
-- [ ] **Naming de devices en TB** — verificar en DeviceImport CSV que
-      los nombres coincidan con los tag names del OPC
-- [ ] **URL del servicio ML inference** — hostname:puerto dentro de Docker
-- [ ] **Body que espera `/api/inference`** — estructura JSON exacta
-      (¿`{ts, sensors: {...}}`? ¿otro formato?)
+- [x] **Formato del payload del OPC Client** — **Resuelto**: contrato
+      definido por UCAM en Apéndice D.2 (`{ts, values: {...}}`).
+- [x] **URL canónica del endpoint NR** — **Resuelto**: `POST /api/opc-ingest`
+      en puerto 1880 (ver Fase 1 §URL canónica y Apéndice D.2).
+- [x] **Naming de devices en TB** — **Resuelto**: identidad tag→name
+      (ver Apéndice D.1, basado en `deploy/ESAMUR/DeviceImport.csv`).
+- [ ] **URL del servicio ML inference** (`flow.ML_INFERENCE_URL`) —
+      hostname:puerto del servicio. No bloquea Fase 2 (fallback
+      silencioso si no set, ver Apéndice D.3.2).
+- [x] **Body que espera `/api/inference`** — **Resuelto**: contrato
+      definido por UCAM en Apéndice D.3 (`{ts, sensors: {...}}`).
 
 Si no tienes todas las respuestas, puedes ejecutar Fase 0 (PoC) sin
 ninguna de ellas. La PoC solo usa mosquitto contra TB.
@@ -1276,6 +1273,37 @@ Si en el futuro aparece un cliente cuya convención difiera (p.ej.
 prefijo `CLIENTE_` en el nombre), se introducirá una capa de mapeo
 configurable por cliente, pero no es necesario hoy.
 
+#### D.1.1 — El CSV `DeviceImport.csv` en v2: referencia histórica, no input
+
+El fichero `deploy/ESAMUR/DeviceImport.csv` **no se usa** como input del
+deploy pipeline en v2. En v2, los devices per-sensor se auto-crean
+vía `connect` con `type` (ver D.4 y Fase 3). El CSV permanece en el
+repo como **referencia del inventario de tags del cliente** (qué
+sensores hay en la planta de ESAMUR), útil para auditoría y para
+comparar con los devices que aparezcan en TB por auto-provisioning.
+
+Implicación importante sobre el campo `type`:
+
+- El CSV usa el campo `type` como **label** (categoría de texto libre
+  asociada al device en TB): `"ESAMUR Device"`. Esto es el campo
+  `device.type` de TB, una etiqueta para filtros/UI.
+- En `v1/gateway/connect` el campo `type` significa otra cosa
+  completamente distinta — **nombre del device profile**: la entidad
+  TB que define la rule chain, los calculated fields, y la configuración
+  de transporte (confirmado en doc oficial TB Gateway MQTT API, §Device
+  connect API).
+- **Son dos conceptos distintos que TB nombra igual.** Un device
+  auto-provisionado via `connect {device: "POT_CCM", type: "sensor_planta"}`
+  recibe `deviceProfile = sensor_planta`, pero `device.type` (label)
+  queda a `null`. No se replica el `"ESAMUR Device"` del CSV.
+
+Consecuencia para consumidores downstream (dashboards, filtros, rule
+chains externas): los devices v2 se identifican por **`deviceProfile`
+(`sensor_planta`)**, no por la label `type` del CSV legacy. Cualquier
+filtro que dependa de `device.type = "ESAMUR Device"` dejará de
+encontrar los devices v2. Ver D.7 para el razonamiento del profile
+neutro.
+
 ### D.2 — API 1: `POST /api/opc-ingest` (OPC Client → NR)
 
 **Endpoint**: `POST http://<host>:1880/api/opc-ingest`
@@ -1440,45 +1468,136 @@ que se contratará/construirá).
 ### D.4 — Flujo del function node (pseudo-código)
 
 Consolidación de D.2 + D.3 en la lógica que vivirá en el único function
-node de Fase 2:
+node de Fase 2. El flow tiene **tres pasos visibles** (validación,
+connect messages lazy, telemetry + ML) y una salida 1 que puede ser
+objeto único o array en función de si hay devices nuevos en el scan.
 
 ```
 input:  msg.payload (HTTP body del OPC Client)
-output 1 → mqtt-out (payload Gateway MQTT hacia TB)
+output 1 → mqtt-out (connects + telemetry hacia TB Gateway MQTT)
 output 2 → http-request (body hacia ML inference)
 output 3 → http-response (error 400, solo si payload inválido)
 
-validate:
-  if typeof msg.payload.ts !== "number":
+// ============================================================
+// PASO 1: VALIDACIÓN (ver D.2.2)
+// ============================================================
+if typeof msg.payload.ts !== "number":
     return [null, null, { statusCode: 400, payload: { status: "error", reason: "ts missing or not number" } }]
-  if typeof msg.payload.values !== "object" or Object.keys(msg.payload.values).length === 0:
+if typeof msg.payload.values !== "object" or Object.keys(msg.payload.values).length === 0:
     return [null, null, { statusCode: 400, payload: { status: "error", reason: "values missing or empty" } }]
 
-ts = msg.payload.ts
-values = msg.payload.values
+const ts = msg.payload.ts
+const values = msg.payload.values
 
-// OUTPUT 1 — Gateway MQTT para TB
-gatewayPayload = {}
+// ============================================================
+// PASO 2a: BUILD CONNECT MESSAGES (devices no vistos en este runtime)
+// ============================================================
+// La primera vez que NR ve un tag, publica un `connect` al Gateway
+// con el campo `type` para que TB cree el device con el profile
+// correcto (por defecto "sensor_planta"). Después, solo telemetry.
+//
+// Sin esto, telemetry auto-provisionaría con profile `default`
+// (doc oficial TB Gateway MQTT, Telemetry Upload API). Con connect
+// + type, TB crea el device con el profile indicado (doc oficial,
+// Device connect API). Ver D.7 para el razonamiento del profile.
+
+const DEVICE_PROFILE = flow.get("DEVICE_PROFILE") || "sensor_planta"
+const seen = flow.get("connectedDevices") || new Set()
+const connectMsgs = []
+
+for each tagName in Object.keys(values):
+    if not seen.has(tagName):
+        connectMsgs.push({
+            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),
+            topic: "v1/gateway/connect",
+            qos: 1
+        })
+        seen.add(tagName)
+
+flow.set("connectedDevices", seen)
+
+// ============================================================
+// PASO 2b: BUILD GATEWAY MQTT TELEMETRY PAYLOAD
+// ============================================================
+const gatewayPayload = {}
 for each (tag, value) in values:
     gatewayPayload[tag] = [{ ts: ts, values: { value: value } }]
 
-mqttMsg = { payload: JSON.stringify(gatewayPayload), topic: "v1/gateway/telemetry", qos: 1 }
+const mqttMsg = {
+    payload: JSON.stringify(gatewayPayload),
+    topic: "v1/gateway/telemetry",
+    qos: 1
+}
 
-// OUTPUT 2 — ML inference (si URL configurada)
-if flow.ML_INFERENCE_URL:
+// Output 1: objeto único cuando no hay connects nuevos, array
+// cuando sí los hay. Node-RED mqtt-out acepta ambos — ante un
+// array publica cada elemento en orden de llegada.
+const output1 = connectMsgs.length > 0
+    ? [...connectMsgs, mqttMsg]
+    : mqttMsg
+
+// ============================================================
+// PASO 3: BUILD ML INFERENCE MESSAGE (si URL configurada)
+// ============================================================
+const mlUrl = flow.get("ML_INFERENCE_URL")
+let mlMsg = null
+if mlUrl:
     mlMsg = {
       payload: { ts: ts, sensors: values },
-      url: flow.ML_INFERENCE_URL,
+      url: mlUrl,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      rejectUnauthorized: true,
       timeout: 5000
     }
-else:
-    mlMsg = null  // salida 2 no emite nada
 
-return [mqttMsg, mlMsg, null]
+return [output1, mlMsg, null]
 ```
+
+#### D.4.1 — Notas operacionales sobre el PASO 2a
+
+1. **Cache en memoria del flow, no persistida a disco**.
+   `flow.connectedDevices` es un `Set` mantenido en el context del flow
+   de Node-RED. Tras un restart de NR (o un re-deploy del flow), el Set
+   se vacía. El primer scan post-restart volverá a emitir `connect`
+   para **todos los devices del scan** (hasta N mensajes adicionales una
+   sola vez). Una vez poblado, los scans subsiguientes solo emiten
+   `telemetry`.
+
+2. **Tolerancia a connects repetidos — interpretación a validar en
+   Fase 2.1**. La doc oficial TB Gateway MQTT (§Device connect API)
+   afirma el comportamiento solo para devices nuevos: *"If a device
+   with the given name does not exist, ThingsBoard creates it
+   automatically"*. **No hay afirmación explícita** sobre qué hace TB
+   con un `connect` para un device que ya existe. Por inferencia
+   razonable (si "creates if not exists" es el único efecto descrito,
+   repetir el mensaje no debería duplicar ni resetear), **asumimos
+   idempotencia**, pero es interpretación nuestra de la doc. Fase 2.1
+   incluirá un test específico: publicar dos `connect` consecutivos
+   para el mismo device y verificar que TB no duplica, no cambia el
+   profile, y no genera error. Si el test fallara, ajustaríamos la
+   estrategia (p. ej. persistir `connectedDevices` a disco para
+   preservarlo entre restarts).
+
+3. **Por qué connect en vez de solo telemetry** (resumen de la doc
+   oficial):
+   - Telemetry API: *"If the device with the given name does not
+     exist, ThingsBoard creates it automatically with `default` profile
+     name"*.
+   - Connect API: permite especificar `type`, que según la doc es
+     *"Name of the device profile"*. Si el profile indicado no existe,
+     TB lo crea automáticamente (vacío).
+   - **Sin connect explícito**, los devices v2 quedarían con profile
+     `default` y perderíamos la rule chain + calculated fields que
+     `sensor_planta` lleva asociados (ver D.7). Los connects son por
+     tanto **necesarios**, no opcionales.
+
+4. **Output 1: objeto único vs array**. El nodo `mqtt-out` de Node-RED
+   acepta ambas formas: un mensaje suelto se publica como un único
+   MQTT PUBLISH; un array de mensajes se publica como N PUBLISH en
+   orden. La lógica elige una u otra para no emitir arrays de un solo
+   elemento innecesariamente (estética; ambas formas son correctas).
+   Esta semántica de `mqtt-out` se validará en Fase 2.1 con la doc
+   oficial de Node-RED antes de implementar.
 
 ### D.5 — Ejemplo end-to-end con datos reales de ESAMUR
 
@@ -1517,8 +1636,11 @@ Output 1 (MQTT publish a TB en topic `v1/gateway/telemetry`):
 }
 ```
 
-TB auto-provisiona cualquier device que no exista (y luego se le
-asigna el device profile `"ESAMUR Device"` que su rule chain gestiona).
+Antes del primer `v1/gateway/telemetry`, NR publica los
+`v1/gateway/connect` correspondientes (PASO 2a del function node, ver
+D.4). TB auto-provisiona cualquier device que no exista con el profile
+`sensor_planta` indicado en el `connect`. La rule chain asociada al
+profile procesa la telemetría posterior.
 
 Output 2 (POST a ML inference):
 
@@ -1558,3 +1680,88 @@ salida 1 (MQTT → TB) se prueba E2E contra el entorno local (Fase 0/1
 validaron la viabilidad). La salida 2 (HTTP → ML) se prueba con un
 mock local (ej. `mitmproxy` o un endpoint dummy) o se deja silenciada
 hasta que el servicio exista.
+
+### D.7 — Device profile v2: `sensor_planta`
+
+El refactor v2 introduce un único device profile nuevo en TB —
+`sensor_planta` — al que se adscriben todos los devices per-sensor
+auto-provisionados vía `connect`. Este apartado documenta qué es, por
+qué es neutro respecto al cliente, y cómo se relaciona con los `type`
+legacy del CSV.
+
+#### D.7.1 — Qué es `sensor_planta`
+
+Un device profile en TB es una entidad que agrupa:
+
+- Una **rule chain** asociada (lo que TB ejecuta cuando llega
+  telemetría a devices del profile).
+- **Calculated fields** del device (si hubiera).
+- **Configuración de transporte** (HTTP, MQTT, etc.).
+- **Device data** schema (attributes esperados, etc.).
+
+`sensor_planta` encapsula el comportamiento v2 para un sensor genérico
+de planta: rule chain que persiste timeseries, dispara alarmas según
+thresholds, y expone los datos a consumidores downstream (Blockchain,
+ML inference ya tienen sus propios paths).
+
+#### D.7.2 — Por qué neutro por-cliente (y no `"ESAMUR Device"`)
+
+En v1 los devices llevaban `type = "<Cliente> Device"` en el CSV como
+convención. En v2 se rechaza esta convención por dos motivos:
+
+1. **Un profile es comportamiento, no identidad del cliente**. Una
+   planta de agua es una planta de agua: los sensores del PLC tienen
+   el mismo tipo de telemetría, las mismas reglas de validación, los
+   mismos thresholds estructurales, independientemente de si la planta
+   la opera ESAMUR o cualquier otro cliente. Un profile por cliente
+   duplicaría el comportamiento sin razón.
+
+2. **Aspiración a profile reutilizable entre instancias**. El modelo
+   de despliegue actual es "una instancia Docker Compose por cliente"
+   (§D.2.4). Cada instancia tiene su propio TB, su propio profile
+   `sensor_planta` creado localmente. Pero si mañana el diseño
+   evolucionara hacia un TB compartido multi-tenant, un profile
+   `sensor_planta` neutro se reutilizaría sin renombrar. Un profile
+   `ESAMUR Device` obligaría a crear `FR_ARAGON Device`, `OTRO Device`,
+   etc. — contaminación progresiva del espacio de nombres.
+
+El identificador del cliente sigue siendo implícito por el entorno
+(cada planta = una instancia = una TB), pero el profile queda limpio
+de semántica de cliente.
+
+#### D.7.3 — Cómo se crea (Fase 3)
+
+El profile se provisiona en Fase 3 antes del primer `connect` de NR.
+Dos caminos posibles (ambos válidos, ver Fase 3 §3.1):
+
+- **Creación from-scratch via REST API**: POST a `/api/deviceProfile`
+  con `name: "sensor_planta"`, `type: "DEFAULT"`, `transportType:
+  "DEFAULT"`. Tras crear, asociar la rule chain deseada desde la UI o
+  via API.
+- **Importar profile exportado**: si se tiene un JSON exportado con
+  `devices_root_rule_chain` ya asociada, importar vía la función de
+  import de TB.
+
+**Nota sobre el orden**: si NR publica un `connect` con `type:
+"sensor_planta"` antes de que el profile exista, TB **lo crea
+automáticamente** (doc oficial, §Device connect API: *"If the device
+profile name is provided and the profile does not exist, ThingsBoard
+creates it automatically"*). Pero el profile creado así estaría
+**vacío** — sin rule chain, sin CFs. Funcionaría para persistir
+telemetría básica pero perdería la lógica v2. Por eso Fase 3 pre-crea
+el profile explícito con rule chain antes de publicar el primer
+`connect`.
+
+#### D.7.4 — Relación con el `type` del CSV legacy
+
+| Concepto | v1 (CSV) | v2 (connect) |
+|---|---|---|
+| Origen | `DeviceImport.csv` columna `type` | Campo `type` en payload `v1/gateway/connect` |
+| Semántica en TB | Setea `device.type` (label de texto libre) | Setea `device.deviceProfileId` (referencia al profile) |
+| Ejemplo | `"ESAMUR Device"` | `"sensor_planta"` |
+| Afectación del comportamiento | Ninguna — solo etiqueta | Asocia rule chain, CFs, transporte via el profile |
+| Por-cliente | Sí, convención histórica | No, neutro |
+
+En v2, los devices auto-provisionados **no tienen `device.type` seteado**
+(queda `null`). El CSV legacy queda como referencia del inventario
+(§D.1.1), no como input del deploy pipeline.
