@@ -1,27 +1,46 @@
 # Contrato ML Inference — `POST /api/inference`
 
-Contrato entre Node-RED (NR) y el servicio de inferencia ML del
-pipeline v2. Este documento es la referencia para el equipo que
-implementa el servicio ML.
+Contrato HTTP entre el pipeline TrueData (Node-RED) y el **servicio
+ML** de inferencia. Este documento es la referencia de implementación
+para el equipo que desarrolla y opera el servicio ML.
 
-- **Dirección:** NR → servicio ML
-- **Modo:** fire-and-forget. NR no consume la respuesta.
-- **Criticidad:** **no bloqueante.** Si el servicio ML está caído o
-  lento, ThingsBoard sigue recibiendo telemetría normalmente.
+---
+
+## Resumen del contrato
+
+### Qué ofrece UCAM
+
+- Un `POST` HTTP por cada scan del PLC al endpoint del servicio ML,
+  emitido por Node-RED en paralelo a la persistencia en ThingsBoard.
+- Un body JSON compacto con el timestamp del scan y todas las lecturas
+  (`{ts, sensors}`), sin pre-procesado ni filtrado.
+- Despacho independiente: la disponibilidad y latencia del servicio ML
+  no afectan a la persistencia en TB ni al acuse al servicio OPC.
+- Persistencia completa del scan en TB, disponible por REST API como
+  fuente de verdad para backfill.
+
+### Qué necesita UCAM del servicio ML
+
+- Un endpoint HTTP accesible que acepte POST con `Content-Type:
+  application/json`.
+- Respuesta (cualquiera, 2xx/4xx/5xx) en menos de 5 s en condiciones
+  normales. Node-RED corta cualquier petición que exceda ese timeout.
+- Que el servicio ML sea autónomo en el writeback de resultados a TB
+  (Node-RED no participa en ese camino).
+- Colaboración en las preguntas abiertas al final del documento.
 
 ---
 
 ## Endpoint (que debe exponer el servicio ML)
 
 ```
-POST http://<ml-host>:<ml-port>/api/inference
+POST http://<ml-host>:<ml-port>/<ml-path>
 Content-Type: application/json
 ```
 
-La URL se configura en NR vía `flow.ML_INFERENCE_URL`. Si no está set,
-NR no emite este POST (ver §Fallback). El path `/api/inference` es
-convención UCAM pero puede coordinarse con el equipo ML si se prefiere
-otro.
+La URL completa se configura en Node-RED en tiempo de despliegue.
+El path exacto (`/api/inference`, u otro) se acuerda entre equipos; lo
+relevante es que coincida con lo configurado en Node-RED.
 
 ---
 
@@ -45,22 +64,24 @@ otro.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `ts` | number (Unix ms) | Timestamp del PLC del scan. Idéntico al `ts` que se envía a TB — permite correlacionar con la telemetría persistida |
-| `sensors` | object | Diccionario `{tag_name: value}` con **todas** las lecturas del scan. No filtrado |
-| `sensors.<tag>` | number \| boolean \| string | Valor del sensor, tal cual viene del PLC |
+| `ts` | number (Unix ms) | Timestamp del PLC del scan. Idéntico al `ts` persistido en TB — sirve como clave natural para correlacionar inferencia con telemetría |
+| `sensors` | object | Diccionario `{tag_name: value}` con **todas** las lecturas del scan, sin filtrado |
+| `sensors.<tag>` | number \| boolean \| string | Valor del sensor tal cual lo envía el PLC |
 
-### Semántica
+### Reglas semánticas
 
-- **NR envía todos los tags del scan, sin filtrar.** El servicio ML
-  decide qué features consumir. Filtrar en NR acoplaría UCAM al modelo
-  concreto.
+- **Un scan = un POST**. Cadencia típica: ~34 s (variable por planta).
 - **Los nombres de tags son literales del PLC** (no normalizados).
-- **Un scan = un POST.** Cadencia típica: ~34 s (variable según planta).
-- **El `ts` es el mismo que el enviado a TB.** Atomicidad del scan.
+- **`sensors` contiene el scan completo, sin filtrar**. Si el modelo
+  solo consume un subconjunto, el filtrado ocurre en el lado del
+  servicio ML. Así, añadir o quitar sensores del PLC no requiere
+  coordinar cambios en Node-RED.
 
 ---
 
-## Ejemplo ejecutable (simulación desde curl)
+## Ejemplo ejecutable
+
+Simulando la llegada de un scan al servicio ML:
 
 ```sh
 curl -s -X POST http://localhost:5000/api/inference \
@@ -77,43 +98,65 @@ curl -s -X POST http://localhost:5000/api/inference \
 
 ---
 
-## Qué se espera del servicio ML como respuesta
+## Comportamiento de Node-RED hacia el servicio ML
 
-**NR ignora la respuesta.** Sea cual sea el status code, el body, o
-incluso la ausencia de respuesta, NR no la procesa ni la reenvía.
+Node-RED actúa como **disparador**, no como consumidor del resultado:
 
-Esto significa:
+| Aspecto | Comportamiento |
+|---|---|
+| Procesamiento de la respuesta | NR **descarta** el body y el código. Cualquier 2xx/4xx/5xx se loguea para observabilidad y se ignora funcionalmente |
+| Timeout | **5000 ms**. Si el servicio ML no responde en 5 s, NR cancela la conexión. El siguiente scan llega ~34 s después |
+| Reintentos | Ninguno. Un POST fallido (timeout, error de red, 5xx) no se reenvía |
+| Concurrencia | Un POST por scan; NR no encola ni buffera si el servicio ML se cuelga |
 
-- No hace falta devolver un JSON específico a NR.
-- No hace falta devolver `200`. Cualquier `2xx`, `4xx`, `5xx` es
-  irrelevante para el flow de ingestión.
-- La respuesta se registra en logs de NR (info si `2xx`, warning si
-  otros) solo para observabilidad. No afecta el path de datos.
-
-**Los resultados de inferencia NO se devuelven a NR.** El servicio ML
-los envía por su propio camino:
-
-- A **ThingsBoard**, usando su propio cliente HTTP/MQTT contra la API
-  de TB.
-- A **cualquier otro consumidor downstream** (ej. servicio de
-  blockchain), también por su propio camino.
-
-NR no es un broker de resultados. Actúa como disparador.
+El término "fire-and-forget" aplica en su sentido estricto: NR dispara
+el POST y **no procesa la respuesta**. El único comportamiento síncrono
+es el timeout de 5 s.
 
 ---
 
-## Timeouts y SLA que impone NR
+## Asunciones explícitas
 
-| Parámetro | Valor | Comportamiento |
-|---|---|---|
-| `requestTimeout` | **5000 ms** | Si el servicio ML no responde en 5 s, NR cancela la conexión y continúa. El error queda en logs como `"no response from server"` (`ETIMEDOUT`) |
-| Reintentos | Ninguno | Un scan perdido por timeout o error no se reenvía. El siguiente scan llega ~34 s después |
-| Concurrencia | Serial implícito | NR postea un scan por ciclo. No hay encolado ni buffering si el servicio ML se cuelga |
+Estas asunciones son parte del contrato. Si alguna no se cumple,
+conviene renegociar antes de integrar.
 
-**Implicación para el servicio ML:** debe responder (o fallar rápido)
-en < 5 s. Si la inferencia tarda más, la arquitectura correcta es
-**aceptar el POST rápido y procesar en background**, devolviendo
-inmediatamente un `202 Accepted` o similar.
+### A1 — El servicio ML expone un endpoint HTTP con POST JSON
+
+Endpoint accesible desde la red donde corre Node-RED, que acepta
+`Content-Type: application/json` y tolera el body especificado
+en §Request body.
+
+### A2 — Respuesta en < 5 s en condiciones normales
+
+Si la inferencia es más larga que eso, la arquitectura correcta es
+**aceptar el POST rápido (`202 Accepted` o similar) y procesar en
+background**. Mantener la conexión abierta más de 5 s provoca timeout
+en Node-RED y el scan se considera perdido para inferencia.
+
+### A3 — Writeback a TB es responsabilidad del servicio ML
+
+Node-RED no participa en el camino de resultados. El servicio ML
+escribe sus outputs a ThingsBoard por el canal que decida (REST API
+de TB, MQTT, etc.) y, si corresponde, a otros consumidores downstream
+(blockchain, etc.).
+
+UCAM puede pre-provisionar en TB las entidades que el servicio ML
+necesite para escribir sus resultados (un device "inference results",
+un profile con rule chain específica, calculated fields, etc.) — ver
+la pregunta abierta 3 al final.
+
+### A4 — El servicio ML no depende de NR más allá de recibir el scan
+
+Ninguna llamada de vuelta hacia NR forma parte del contrato. Si el
+servicio ML necesita datos históricos, la fuente es TB (ver §Recuperación
+de scans perdidos), no NR.
+
+### A5 — Un fallo del servicio ML no bloquea la persistencia en TB
+
+NR dispara el POST a ML y el publish a TB en paralelo. Si el servicio
+ML está caído, TB sigue recibiendo telemetría normalmente y el servicio
+OPC recibe su `200` sin retraso. El único impacto de un fallo ML es la
+pérdida de inferencia en tiempo real para los scans afectados.
 
 ---
 
@@ -121,91 +164,65 @@ inmediatamente un `202 Accepted` o similar.
 
 | Escenario | Comportamiento de NR |
 |---|---|
-| `flow.ML_INFERENCE_URL` no configurada | NR omite silenciosamente el POST a ML. TB sigue recibiendo telemetría normal |
-| URL configurada pero `connection refused` | NR loguea warning (`ECONNREFUSED`). TB sigue recibiendo telemetría normal. Respuesta al cliente OPC: `200` |
-| URL configurada, servicio cuelga sin responder | NR corta tras 5 s. Loguea timeout. TB sigue recibiendo telemetría normal. Respuesta al cliente OPC: `200` |
-| Servicio ML devuelve `5xx` | NR loguea warning con el código. TB sigue recibiendo telemetría normal |
+| URL de ML no configurada | NR omite el POST silenciosamente. TB sigue recibiendo telemetría normal |
+| URL configurada pero `connection refused` | NR loguea warning (`ECONNREFUSED`). TB sigue recibiendo telemetría normal. `200` al servicio OPC |
+| URL configurada, servicio cuelga sin responder | NR corta tras 5 s. Loguea timeout. TB sigue recibiendo telemetría normal. `200` al servicio OPC |
+| Servicio ML devuelve `5xx` | NR loguea warning con el código. Ningún impacto aguas arriba |
 
-**Garantía de diseño:** un fallo del servicio ML **jamás** afecta a la
-persistencia en ThingsBoard ni a la respuesta al cliente OPC. TB y
-ML son paths independientes: NR los despacha en paralelo y ninguno
-bloquea al otro.
+**Garantía de diseño:** los fallos del servicio ML son invisibles para
+el servicio OPC y para la persistencia en TB.
 
 ---
 
-## Configuración de la URL en NR
+## Recuperación de scans perdidos
 
-Dos caminos:
+Los scans en los que el POST a ML falla o da timeout se consideran
+perdidos **para inferencia en tiempo real**. Node-RED no reintenta ni
+encola.
 
-### Producción
+Sin embargo, **todos los scans se persisten en TB independientemente
+del estado del servicio ML**: la ingestión a TB usa el canal MQTT,
+independiente del POST HTTP a ML. Si el servicio ML necesita recuperar
+una ventana de scans perdidos tras un outage, puede consultarlos en TB
+vía REST API:
 
-Setear `flow.ML_INFERENCE_URL` como parte del flow persistido. UCAM se
-encarga en el deploy pipeline.
-
-### Desarrollo
-
-El flow expone (solo cuando `NR_ADMIN_ENABLED=true` en el entorno)
-tres endpoints auxiliares:
-
-```sh
-# Setear URL en runtime
-curl -s -X POST http://localhost:1880/admin/set-ml-url \
-  -H "Content-Type: application/json" \
-  -d '{"url":"http://<ml-host>:<port>/api/inference"}'
-
-# Leer URL actual
-curl -s http://localhost:1880/admin/get-ml-url
-
-# Limpiar URL (silencia la salida)
-curl -s -X POST http://localhost:1880/admin/clear-ml-url
+```
+GET http://<tb-host>:9090/api/plugins/telemetry/DEVICE/<deviceId>/values/timeseries
+    ?keys=value
+    &startTs=<ms>
+    &endTs=<ms>
 ```
 
-En producción, `NR_ADMIN_ENABLED` no se setea y estos endpoints
-devuelven `404` byte-identical a un path inexistente.
+El `deviceId` se obtiene listando devices del profile `sensor_planta`
+vía `/api/tenant/devices`. El endpoint de telemetría y la
+autenticación siguen la doc oficial de ThingsBoard.
+
+Si el servicio ML decide aceptar la pérdida y no hacer backfill,
+también es una decisión válida — queda a criterio del equipo ML en
+función de sus requisitos de continuidad.
 
 ---
 
-## FAQ
+## Preguntas abiertas para el servicio ML
 
-**¿El servicio ML debe escuchar en `/api/inference` literalmente?**
+Puntos a alinear antes de pasar a entorno compartido.
 
-Es convención UCAM; el path exacto se puede coordinar. Lo relevante es
-que la URL configurada en `flow.ML_INFERENCE_URL` apunte al endpoint
-que acepte el body especificado.
+1. **URL del endpoint.** ¿Cuál será el hostname, puerto y path del
+   endpoint de inferencia? ¿Se prevé un cambio por entorno
+   (dev/pre/prod)?
 
-**¿El servicio ML puede exigir autenticación?**
+2. **Campos adicionales en el body.** ¿El modelo requiere algún campo
+   además de `ts` y `sensors` (p.ej. `client_id`, `model_version`,
+   `plant_id`)? Si es necesario, Node-RED puede añadirlos sin cambio
+   estructural.
 
-Sí. NR postea con `Content-Type: application/json` y sin `Authorization`
-por defecto. Si el servicio exige auth, hay que coordinar con UCAM
-para añadir headers al POST (cambio trivial en el flow).
+3. **Writeback a TB: formato y topología.** ¿Cómo escribirá el servicio
+   ML sus resultados en TB — REST API, MQTT, qué device(s)? UCAM puede
+   pre-provisionar las entidades necesarias (device "inference
+   results", profile específico, rule chain) si se acuerda el diseño
+   con antelación.
 
-**¿Hay límite de tamaño del body?**
-
-No impuesto explícitamente. El tamaño típico es ~3 KB para scans de
-~30 sensores. NR no rechaza bodies grandes hasta los defaults de Node-RED
-(varios MB).
-
-**¿El servicio ML puede asumir que NR envía en orden cronológico?**
-
-Sí, en el caso normal (scans en tiempo real). Si se reproducen datos
-históricos vía store-and-forward del cliente OPC, los `ts` pueden
-llegar fuera de orden de wall-clock pero siempre con su timestamp
-real del PLC.
-
-**¿Qué tags exactos voy a recibir?**
-
-Depende de la planta. Cada instancia NR recibe los tags del cliente
-OPC de esa planta. Ejemplo para una planta tipo: `POT_CCM`, `TURB1`,
-`FT1`, `pH_Entrada`, `SH2_AguaBruta`, etc. El servicio ML debe ser
-robusto a:
-- Añadir o quitar tags sin redeploy del ML (el modelo usa los que
-  reconoce).
-- Cambios de nombres de tags se coordinan como cambio de contrato
-  entre UCAM y el equipo ML.
-
-**¿Cómo sé si NR me está enviando datos?**
-
-Loguear cada POST recibido en el servicio ML. Si no llegan POSTs con
-la cadencia esperada (~34 s), el problema está upstream de ML: cliente
-OPC caído, NR sin ingestión, o `flow.ML_INFERENCE_URL` sin setear.
-
+4. **Estrategia de scans perdidos.** ¿El servicio ML implementará
+   backfill contra la REST API de TB para recuperar ventanas perdidas
+   tras un outage, o se acepta la pérdida y se compensa a nivel de
+   modelo/monitorización?
