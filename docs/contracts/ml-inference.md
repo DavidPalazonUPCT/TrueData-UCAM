@@ -127,9 +127,9 @@ inmediatamente un `202 Accepted` o similar.
 | Servicio ML devuelve `5xx` | NR loguea warning con el código. TB sigue recibiendo telemetría normal |
 
 **Garantía de diseño:** un fallo del servicio ML **jamás** afecta a la
-persistencia en ThingsBoard ni a la respuesta al cliente OPC. Ver
-[ADR-003 §2.1](../architecture/ADR-003.md) para la independencia
-TB↔ML.
+persistencia en ThingsBoard ni a la respuesta al cliente OPC. TB y
+ML son paths independientes: NR los despacha en paralelo y ninguno
+bloquea al otro.
 
 ---
 
@@ -209,10 +209,3 @@ Loguear cada POST recibido en el servicio ML. Si no llegan POSTs con
 la cadencia esperada (~34 s), el problema está upstream de ML: cliente
 OPC caído, NR sin ingestión, o `flow.ML_INFERENCE_URL` sin setear.
 
----
-
-## Referencias
-
-- [ADR-003 §2.1](../architecture/ADR-003.md) — independencia TB↔ML
-- [PLAN-001 §D.3](../architecture/PLAN-001) — contrato completo y razonamiento
-- [PLAN-001 §D.5](../architecture/PLAN-001) — ejemplo end-to-end con datos reales

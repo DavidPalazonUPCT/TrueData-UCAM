@@ -6,9 +6,11 @@ Gateway MQTT API, y dispara la inferencia ML en paralelo.
 
 - **Imagen:** `nodered/node-red:3.1.9`
 - **Puerto:** `1880` (editor + endpoints HTTP)
-- **Contexto:** ver [ADR-003](../docs/architecture/ADR-003.md) para la
-  arquitectura y [PLAN-001](../docs/architecture/PLAN-001) Apéndice D
-  para los contratos de API.
+- **Contratos de API:** ver
+  [`docs/contracts/opc-ingest.md`](../docs/contracts/opc-ingest.md) y
+  [`docs/contracts/ml-inference.md`](../docs/contracts/ml-inference.md).
+- **Documentación complementaria:** ver [`SETUP.md`](SETUP.md) para
+  la provisión del Gateway device y el setup end-to-end.
 
 ---
 
@@ -63,8 +65,8 @@ access token del Gateway device de TB en la UI:
 2. Editar el config node `TB Gateway` → tab Security → `user =
    <GATEWAY_TOKEN>` → Update → Deploy.
 
-El `GATEWAY_TOKEN` se genera al crear el Gateway device en TB
-(PLAN-001 Apéndice E paso 4).
+El `GATEWAY_TOKEN` se genera al crear el Gateway device en TB. Ver
+[`SETUP.md`](SETUP.md) para el procedimiento completo.
 
 ---
 
@@ -94,7 +96,7 @@ docker exec truedata-nodered_tb-1 nc -zv thingsboard 1883
 |---|---|
 | URL editor | `http://localhost:1880` |
 | Usuario | `tenant` |
-| Password | hash bcrypt en `settings.js` (no recuperable — ver deuda en PLAN-001 §B.4) |
+| Password | hash bcrypt en `settings.js` (no recuperable desde el hash; si se pierde, regenerar con `node -e "console.log(require('bcryptjs').hashSync('tu_password', 8))"` y reescribir `settings.js`) |
 | `credentialSecret` | definido en `settings.js` (no cambiar post-deploy; invalida credentials cifradas) |
 
 ---
@@ -114,9 +116,21 @@ docker exec truedata-nodered_tb-1 nc -zv thingsboard 1883
          └──► Salida 3 → [http-response 200/400]
 ```
 
-El function node vive embebido en `data/flows.json`. Para el pseudo-código
-completo y la semántica de cada paso, ver
-[PLAN-001 §D.4](../docs/architecture/PLAN-001).
+El function node vive embebido en `data/flows.json`. Pasos internos:
+
+1. **Validación:** `ts` debe ser `typeof "number"`; `values` debe ser
+   objeto no vacío. Si no, sale por la salida 3 con `400`.
+2. **Connect lazy:** para cada tag que NR no ha visto antes en este
+   runtime, publica un `v1/gateway/connect` con
+   `{device: <tag>, type: <DEVICE_PROFILE>}`. TB auto-crea el device
+   con el profile indicado. La lista de devices ya vistos se cachea en
+   `flow.connectedDevices` (memoria; se vacía en restart).
+3. **Telemetry:** publica `v1/gateway/telemetry` con
+   `{<tag>: [{ts, values: {value}}]}` para todos los tags del scan, con
+   el mismo `ts` client-side.
+4. **ML paralelo:** si `flow.ML_INFERENCE_URL` está set, postea
+   `{ts, sensors: values}` con timeout 5 s (fire-and-forget).
+5. **Ack:** responde `{status: "ok", tags: N}` al cliente OPC.
 
 ---
 
@@ -139,5 +153,5 @@ completo y la semántica de cada paso, ver
 | `POST /api/opc-ingest` devuelve `400 ts missing or not number` | El body debe llevar `ts` como número Unix ms. Ver [contracts/opc-ingest.md](../docs/contracts/opc-ingest.md) |
 | `POST /api/opc-ingest` devuelve `400 values missing or empty` | `values` debe ser un objeto no vacío |
 | Devices no aparecen en TB tras un POST válido | Verificar que el config node `TB Gateway` tenga el token correcto y el broker conecte a `thingsboard:1883` |
-| Salida ML silenciada permanentemente | `flow.ML_INFERENCE_URL` no está set. Ver PLAN-001 Apéndice E para setearla en dev vía `/admin/set-ml-url` |
+| Salida ML silenciada permanentemente | `flow.ML_INFERENCE_URL` no está set. Para setearla en dev (con `NR_ADMIN_ENABLED=true`): `curl -X POST http://localhost:1880/admin/set-ml-url -H "Content-Type: application/json" -d '{"url":"http://<ml-host>:<port>/api/inference"}'` |
 | Cambios en `settings.js` no aplican | El archivo se monta como volumen; restart: `docker compose restart nodered_tb` |

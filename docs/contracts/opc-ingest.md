@@ -95,11 +95,10 @@ Respuesta esperada:
 | `400 Bad Request` | `{"status": "error", "reason": "ts missing or not number"}` | `ts` ausente o no es `typeof "number"` |
 | `400 Bad Request` | `{"status": "error", "reason": "values missing or empty"}` | `values` ausente, no es objeto, o está vacío |
 
-> **Nota:** el `200` confirma que el payload se parseó y se publicó al
-> broker MQTT. No es un ACK de persistencia en la DB de ThingsBoard.
-> Un fallo posterior en el broker se vería como ausencia de telemetría
-> en TB, no como error en esta respuesta. Ver
-> [PLAN-001 §D.2.3](../architecture/PLAN-001) para el razonamiento.
+> **Nota:** el `200` confirma que el payload se parseó y que NR
+> disparó el publish MQTT a ThingsBoard. No es un ACK de persistencia
+> en la DB de TB. Un fallo posterior en el broker se vería como
+> ausencia de telemetría en TB, no como error en esta respuesta.
 
 ---
 
@@ -162,8 +161,11 @@ Si NR está caído o inalcanzable, el POST falla con error de red
 reenviar, se envían con su `ts` original del PLC (client-side timestamp,
 preservado). TB almacenará los datos con su temporalidad real.
 
-Ver [ADR-003 §2.3.1](../architecture/ADR-003.md) para el razonamiento
-del client-side timestamp y su relación con store-and-forward.
+**Por qué client-side timestamp:** un timestamp asignado en NR/TB al
+recibir el dato pierde la temporalidad real cuando los datos llegan
+retrasados tras un corte de red. Con el `ts` del PLC, los datos
+recuperados conservan su posición temporal original — requisito para
+que cualquier esquema de store-and-forward funcione correctamente.
 
 ---
 
@@ -217,10 +219,3 @@ documentará en este mismo contrato como campo adicional (header
 - Red Docker interna aislada (el puerto 1880 no expuesto al público).
 - Firewall de host restringiendo 1880 al cliente OPC.
 
----
-
-## Referencias
-
-- [ADR-003 §2.1](../architecture/ADR-003.md) — arquitectura pipeline v2
-- [PLAN-001 §D.2](../architecture/PLAN-001) — contrato completo y razonamiento
-- [PLAN-001 §D.5](../architecture/PLAN-001) — ejemplo end-to-end con datos reales

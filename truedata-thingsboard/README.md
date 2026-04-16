@@ -7,9 +7,12 @@ servicios de inferencia).
 
 - **Imagen:** `thingsboard/tb-postgres:4.1.0`
 - **DB:** `postgres:13` (sidecar)
-- **Contexto:** ver [ADR-001](../docs/architecture/ADR-001-current-pipeline.md)
-  para el pipeline original y [ADR-003](../docs/architecture/ADR-003.md)
-  para la arquitectura v2.
+- **Contratos de API:** ver
+  [`docs/contracts/opc-ingest.md`](../docs/contracts/opc-ingest.md) y
+  [`docs/contracts/ml-inference.md`](../docs/contracts/ml-inference.md).
+- **Documentación complementaria:** ver
+  [`DEVICE-PROFILE.md`](DEVICE-PROFILE.md) para el profile
+  `sensor_planta` y su rule chain.
 
 ---
 
@@ -130,8 +133,8 @@ Los devices auto-provisionados por Node-RED se adscriben al profile
 `sensor_planta` (neutro por cliente). El profile debe crearse antes
 del primer `connect` para que la rule chain y los calculated fields
 queden asociados correctamente. Ver
-[PLAN-001 §D.7](../docs/architecture/PLAN-001) para el razonamiento
-y el procedimiento de creación.
+[`DEVICE-PROFILE.md`](DEVICE-PROFILE.md) para el procedimiento y el
+razonamiento del nombre neutro.
 
 ---
 

@@ -23,15 +23,17 @@ Detailed module guides:
 
 ## Documentation
 
-- [Architecture overview + ADR index](docs/architecture/README.md) —
-  high-level diagram and the chain ADR-001 → ADR-002 → ADR-003.
-- Integration contracts:
-  - [`POST /api/opc-ingest`](docs/contracts/opc-ingest.md) — for the
-    OPC client team (cliente OPC → Node-RED).
-  - [`POST /api/inference`](docs/contracts/ml-inference.md) — for the
-    ML team (Node-RED → ML service).
-- [PLAN-001](docs/architecture/PLAN-001) — phased implementation plan
-  for the v2 pipeline (current status: Fase 2.2 completed).
+Integration contracts (for external consumers):
+- [`POST /api/opc-ingest`](docs/contracts/opc-ingest.md) — cliente OPC
+  → Node-RED.
+- [`POST /api/inference`](docs/contracts/ml-inference.md) — Node-RED
+  → servicio ML.
+
+Per-service documentation lives next to each service:
+- [`truedata-thingsboard/`](truedata-thingsboard/README.md) — README
+  + complementary docs (e.g. `DEVICE-PROFILE.md`).
+- [`truedata-nodered/`](truedata-nodered/README.md) — README +
+  complementary docs (e.g. `SETUP.md`).
 
 ## Project structure
 
