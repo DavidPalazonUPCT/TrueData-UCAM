@@ -23,17 +23,18 @@ Detailed module guides:
 
 ## Documentation
 
-Integration contracts (for external consumers):
-- [`POST /api/opc-ingest`](docs/contracts/opc-ingest.md) — cliente OPC
-  → Node-RED.
-- [`POST /api/inference`](docs/contracts/ml-inference.md) — Node-RED
-  → servicio ML.
-
-Per-service documentation lives next to each service:
-- [`truedata-thingsboard/`](truedata-thingsboard/README.md) — README
-  + complementary docs (e.g. `DEVICE-PROFILE.md`).
-- [`truedata-nodered/`](truedata-nodered/README.md) — README +
-  complementary docs (e.g. `SETUP.md`).
+- [Architecture overview](docs/architecture/README.md) — high-level
+  diagram + entry point to contracts and service docs.
+- Integration contracts (for external consumers):
+  - [`POST /api/opc-ingest`](docs/contracts/opc-ingest.md) — servicio
+    OPC → Node-RED.
+  - [`POST /api/inference`](docs/contracts/ml-inference.md) — Node-RED
+    → servicio ML.
+- Per-service documentation lives next to each service:
+  - [`truedata-thingsboard/`](truedata-thingsboard/README.md) — README
+    + complementary docs (e.g. `DEVICE-PROFILE.md`).
+  - [`truedata-nodered/`](truedata-nodered/README.md) — README +
+    complementary docs (e.g. `SETUP.md`).
 
 ## Project structure
 
