@@ -6,7 +6,8 @@
 - **Constraint principal:** cero cambios en el OPC Client de Neoradix
 - **Estado de ejecución:**
   - Fase 0 — ✅ **COMPLETADA (2026-04-16)**, 4/4 criterios validados. Ver §Resultado Fase 0.
-  - Fase 1 a 5 — pendientes.
+  - Fase 1 — ✅ **COMPLETADA (2026-04-16)**, 3/3 criterios validados. Ver §Resultado Fase 1.
+  - Fase 2 a 5 — pendientes.
 
 ---
 
@@ -14,7 +15,7 @@
 
 ```
 Fase 0 — PoC Gateway MQTT API              [1 día]     ← ✅ COMPLETADA 2026-04-16
-Fase 1 — Docker Compose + NR endpoint      [medio día] ← NR acepta HTTP del OPC
+Fase 1 — Docker Compose + NR endpoint      [medio día] ← ✅ COMPLETADA 2026-04-16
 Fase 2 — Flow NR: parse + MQTT + ML out    [medio día] ← core del cambio
 Fase 3 — TB: Gateway device + config       [medio día] ← TB recibe via Gateway
 Fase 4 — Eliminar ETLflows + buckets       [medio día] ← limpieza de capa de agregación
@@ -251,9 +252,50 @@ que el puerto 1880 del container NR es accesible para el OPC Client.
 
 ### Criterio de aceptación Fase 1
 
-- [ ] NR resuelve `thingsboard:1883` (MQTT broker) desde su container
-- [ ] Un `curl` desde fuera del compose alcanza el endpoint HTTP de NR
-- [ ] Documentado cómo el OPC Client debe apuntar a NR (URL exacta)
+- [x] NR resuelve `thingsboard:1883` (MQTT broker) desde su container
+- [x] Un `curl` desde fuera del compose alcanza el endpoint HTTP de NR
+- [x] Documentado cómo el OPC Client debe apuntar a NR (URL exacta)
+
+### Resultado Fase 1 (ejecutada 2026-04-16)
+
+Fase 1 completada con reestructuración previa del entorno Compose para
+dar soporte a la convivencia TB + NR desde cualquier directorio de
+trabajo. **3/3 criterios validados.**
+
+| # | Criterio | Evidencia |
+|---|---|---|
+| 1 | NR resuelve `thingsboard:1883` desde su container | `docker exec truedata-nodered_tb-1 getent hosts thingsboard` → `172.19.0.4 thingsboard thingsboard`. `nc -zv thingsboard 1883` → `open`. `nc -zv thingsboard 9090` → `open`. DNS interno Docker + TCP reachable en ambos puertos |
+| 2 | `curl` desde host alcanza endpoint HTTP de NR | `curl -sI http://localhost:1880` → `HTTP/1.1 200 OK` con body HTML (UI de Node-RED). Puerto 1880 mapeado host:container |
+| 3 | Documentada URL canónica para el OPC Client | Ver §URL canónica propuesta (UCAM), pendiente de confirmación por Neoradix |
+
+### URL canónica propuesta (UCAM) — pendiente confirmación Neoradix
+
+El OPC Client de Neoradix debe hacer POST HTTP a la siguiente URL para
+que NR reciba el bulk de cada scan:
+
+```
+POST http://<host>:1880/api/opc-ingest
+Content-Type: application/json
+Body: <payload bulk del scan — formato a confirmar, ver Fase 2>
+```
+
+Donde `<host>` es el hostname o IP donde corre el compose (en desarrollo
+local `localhost`; en despliegue real el host del cluster Docker).
+
+- **Path `/api/opc-ingest`:** elegido por convención (`/api/` para
+  endpoints de API, `opc-ingest` describe la función). Se implementará
+  con un nodo `http in` de Node-RED en Fase 2.
+- **Método:** `POST` (única opción para enviar body JSON).
+- **Puerto:** `1880` (puerto default de NR, ya mapeado host:container).
+- **Estado:** propuesta UCAM. **Pendiente de confirmación con Neoradix**
+  antes de Fase 2. Si Neoradix ya tiene un path hardcoded en su cliente,
+  adoptaremos ese path para minimizar cambios en su lado.
+
+### Cambios estructurales aplicados en Fase 1
+
+Durante Fase 1 se reorganizó la estructura de Compose del repo para
+permitir levantar los servicios de forma coordinada desde la raíz y de
+forma independiente desde cada subdirectorio. Ver Apéndice C.
 
 ---
 
@@ -939,3 +981,180 @@ el host. Los volúmenes siguen siendo inspeccionables con
 - **Credenciales hardcoded** (`tenant`/`tenant`, `thingsboard_password`):
   aceptables para entorno PoC/local. Deben migrarse a secrets o variables
   de entorno antes de ningún despliegue real.
+
+---
+
+## Apéndice B — Auditoría del compose de Node-RED (Fase 1, 2026-04-16)
+
+Paralelo al Apéndice A (TB). Al arrancar NR por primera vez en este
+entorno durante Fase 1 se realizó una auditoría simétrica del compose de
+NR buscando bugs latentes equivalentes. **Resultado: no se encontraron
+bugs nuevos.** Solo aplicó el fix de IPs fijas ya realizado en Fase 0.
+
+### B.1 — Bind mount de `./data/` — funciona gracias a `user: "0:0"`
+
+NR monta `./data:/data` como bind mount al filesystem de Windows vía
+WSL2 DrvFs. Este es el mismo patrón que produjo el fallo de Postgres
+(Apéndice A.4). **En NR funciona** porque NR corre como `user: "0:0"`
+(root), y root tiene privilegios para ignorar las limitaciones de
+ownership de DrvFs. Postgres fallaba porque corría como usuario
+`postgres` sin esos privilegios.
+
+Evidencia tras primer arranque:
+```
+./data/
+  .config.nodes.json   (14 KB)
+  .config.runtime.json (40 bytes)
+  .npm/                (cache npm)
+  lib/                 (flow libs)
+  node_modules/        (instalación inicial)
+  package.json
+  settings.js          (0 bytes, sombra del bind-mount read-only)
+```
+
+Los logs de NR confirman arranque limpio:
+```
+[info] Settings file  : /data/settings.js
+[info] User directory : /data
+[info] Flows file     : /data/flows.json
+[info] Creating new flow file
+[info] Server now running at http://127.0.0.1:1880/
+```
+
+**Trade-off aceptado** (diferente al de TB):
+- Pro: permite editar `flows.json` directamente desde el host, útil en
+  debugging.
+- Pro: el runtime data (flows, credentials) queda visible en el repo
+  checkout (aunque `.gitignore` lo excluye correctamente).
+- Contra: si en el futuro NR cambia su imagen base para no correr como
+  root, el bind mount se romperá y habrá que migrar a named volume.
+  Registrar como deuda.
+
+### B.2 — Bind mount `./settings.js:/data/settings.js:ro`
+
+`settings.js` existe en el repo (24 KB) y se monta read-only. Sin
+problemas. El fichero de 0 bytes que aparece en `./data/settings.js`
+tras arrancar es una sombra artefacto del sistema de ficheros (propio
+de cómo WSL2 DrvFs maneja el overlay del bind mount). No afecta al
+funcionamiento.
+
+### B.3 — `user: "0:0"` (root)
+
+No es un bug, pero sí un olor arquitectónico. Correr el container como
+root funciona pero es contrario a best practices de seguridad
+(principio de menor privilegio). Aceptable para desarrollo local; antes
+de producción considerar migrar a usuario no-root + named volume.
+
+---
+
+## Apéndice C — Reestructuración del Compose (Fase 1, 2026-04-16)
+
+Durante Fase 1 se reorganizó la estructura de ficheros Compose para
+hacer consistente el comportamiento desde cualquier directorio de
+trabajo y evitar duplicidad de volúmenes/containers según el cwd.
+
+### C.1 — Cambios
+
+**Antes:**
+```
+TrueData-UCAM/
+├── truedata-thingsboard/
+│   └── docker-compose.yml       # project name implícito: truedata-thingsboard
+└── truedata-nodered/
+    └── docker-compose.yml       # project name implícito: truedata-nodered
+```
+
+Problemas de esta estructura:
+- Sin compose raíz, no había forma de levantar TB + NR con un único
+  comando desde la raíz del repo.
+- El project name dependía del directorio desde el que se invocaba
+  Compose. Cada sub-compose tenía su propio project (`truedata-thingsboard`
+  o `truedata-nodered`) → volúmenes prefijados distinto según cwd.
+- La red `truedata_iot_network` debía crearse manualmente antes de
+  arrancar, sin documentación clara de cuándo/cómo.
+
+**Después:**
+```
+TrueData-UCAM/
+├── docker-compose.yml           # NUEVO: include + name: truedata
+├── truedata-thingsboard/
+│   └── docker-compose.yml       # + name: truedata
+└── truedata-nodered/
+    └── docker-compose.yml       # + name: truedata
+```
+
+### C.2 — Contenido del compose raíz
+
+Compose nuevo en `/docker-compose.yml`:
+
+```yaml
+name: truedata
+
+include:
+  - truedata-thingsboard/docker-compose.yml
+  - truedata-nodered/docker-compose.yml
+```
+
+Cada sub-compose añade `name: truedata` al inicio como primer campo
+top-level.
+
+### C.3 — Comportamiento resultante
+
+| CWD | Comando | Qué levanta |
+|---|---|---|
+| `/` (raíz) | `docker compose up -d` | Todo: TB + Postgres + NR |
+| `/truedata-thingsboard/` | `docker compose up -d` | Solo TB + Postgres |
+| `/truedata-nodered/` | `docker compose up -d` | Solo NR |
+| cualquiera | `docker compose ps` | Siempre ve el project "truedata" |
+
+Project name `truedata` consistente desde los 3 cwds (validado con
+`docker compose config --format json` comparando los 3 outputs).
+
+### C.4 — Doc oficial consultada
+
+- [`include` top-level element — reference](https://docs.docker.com/reference/compose-file/include/)
+  — confirma que `include:` es sintaxis estable, no experimental.
+- [Use include to modularize Compose files](https://docs.docker.com/compose/how-tos/multiple-compose-files/include/)
+  — confirma que paths relativos en sub-composes se resuelven respecto
+  al directorio del sub-compose, no del raíz. Crítico para los bind
+  mounts de NR (`./data`, `./settings.js`).
+- [Version and name top-level elements](https://docs.docker.com/reference/compose-file/version-and-name/)
+  — confirma semántica de `name:` top-level.
+- [Specify a project name](https://docs.docker.com/compose/how-tos/project-name/)
+  — documenta la precedencia (flag `-p` > env `COMPOSE_PROJECT_NAME` >
+  top-level `name:` > directorio).
+- [Networking — Use an existing network](https://docs.docker.com/compose/how-tos/networking/#use-an-existing-network)
+  — confirma que `external: true` + `name:` explícito preserva el
+  nombre exacto de la red (no la prefija con project name). Validado al
+  confirmar que `truedata_iot_network` sigue siendo válida tras cambiar
+  el project name de `truedata-thingsboard` → `truedata`.
+
+### C.5 — Migración aplicada
+
+Para que el cambio surta efecto se tumbó el stack anterior y se limpiaron
+los volúmenes huérfanos del project name viejo:
+
+```bash
+cd truedata-thingsboard/
+docker compose -p truedata-thingsboard down
+docker volume rm truedata-thingsboard_postgres-data \
+                 truedata-thingsboard_tb-data \
+                 truedata-thingsboard_tb-logs
+cd ..
+docker compose up -d
+```
+
+TB perdió su BD (solo tenía datos de la PoC Fase 0, ya limpiados) y
+completó la migración de schema fresca en ~90 s. NR arrancó en ~8 s.
+
+### C.6 — Deuda / decisiones pendientes
+
+- **Servicio `db` externo vs Postgres embebido**: la variante
+  `tb-postgres` de la imagen de TB incluye un Postgres embebido. Aquí
+  se usa un servicio `db` separado. Simplificable si se quisiera, pero
+  la separación es arquitectónicamente válida y no bloquea nada.
+- **Red externa**: `truedata_iot_network` se sigue creando manualmente
+  (`docker network create truedata_iot_network`). Podríamos declararla
+  no-external en el compose raíz para que Compose la gestione, pero eso
+  obligaría a que los sub-composes la referencien como "parent", lo que
+  les impediría levantarse standalone. Mantener external por ahora.
