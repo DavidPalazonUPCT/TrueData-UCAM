@@ -1748,6 +1748,27 @@ return [output1, mlMsg, null]
    y `msg.statusCode = err.code`. Para el flow v2 esto es ignorado
    (mismo trato que cualquier 4xx/5xx).
 
+7. **Convención de mantenimiento del function node**. El código JS del
+   function vive como string con escapes dentro de `flows.json`. Los
+   `git diff` entre versiones del flow son **ilegibles** — los
+   reviewers no pueden razonar sobre los cambios al function inspeccionando
+   el unified diff. Convención adoptada para mantener la historia
+   revisable:
+
+   - **Cuando un commit toque el código del function node principal,
+     el commit message DEBE incluir el código JS final como bloque
+     code-fenced.** El "diff legible" es entonces el commit message
+     (visible en `git log`), no el diff de `flows.json`.
+   - **Umbral de escalado**: si el function principal supera ~150
+     líneas o desarrolla varias subrutinas independientes, extraer la
+     lógica a `truedata-nodered/lib/opc_parser.js` cargado vía
+     `functionGlobalContext` en `settings.js`. El function del flow
+     queda como orquestador delgado que invoca al helper.
+   - **No escalar antes de cruzar el umbral**: la indirección
+     (función en flow + helper en .js externo) divide la lógica en
+     dos sitios y requiere restart de NR para recargar el helper.
+     Para los ~50 líneas actuales, el coste no justifica el cambio.
+
 ### D.5 — Ejemplo end-to-end con datos reales de ESAMUR
 
 Input del OPC Client (`POST /api/opc-ingest`):
@@ -1914,3 +1935,98 @@ el profile explícito con rule chain antes de publicar el primer
 En v2, los devices auto-provisionados **no tienen `device.type` seteado**
 (queda `null`). El CSV legacy queda como referencia del inventario
 (§D.1.1), no como input del deploy pipeline.
+
+---
+
+## Apéndice E — Reproducibilidad del entorno (Fase 2.2, 2026-04-16)
+
+Checklist ejecutable para regenerar el estado funcional del flow desde
+un repo clonado en limpio. Si lo sigues paso a paso debes llegar al
+mismo estado funcional que el cierre de Fase 2.
+
+**Pre-requisitos del host**:
+
+- Docker Engine + Docker Compose v2.20+
+- Python 3 (con `requests` o solo `curl` en CLI)
+- `mosquitto-clients` (opcional, para tests MQTT directos)
+- `jq` (opcional, parsing de JSON)
+
+**Pasos**:
+
+1. **Crear la red Docker externa** (una sola vez):
+   ```
+   docker network create truedata_iot_network
+   ```
+
+2. **Levantar TB + Postgres + NR desde la raíz del repo**:
+   ```
+   docker compose up -d
+   ```
+   TB tarda ~90 s en el primer arranque (migraciones de schema).
+
+3. **Esperar a que la API REST de TB responda**:
+   ```
+   until curl -sf -o /dev/null -X POST http://localhost:9090/api/auth/login \
+       -H "Content-Type: application/json" \
+       -d '{"username":"tenant@thingsboard.org","password":"tenant"}'; do sleep 5; done
+   ```
+
+4. **Crear el Gateway device en TB y guardar su access token**:
+   ```
+   JWT=$(curl -s -X POST http://localhost:9090/api/auth/login \
+       -H "Content-Type: application/json" \
+       -d '{"username":"tenant@thingsboard.org","password":"tenant"}' \
+       | jq -r .token)
+   GATEWAY_ID=$(curl -s -X POST http://localhost:9090/api/device \
+       -H "Content-Type: application/json" \
+       -H "X-Authorization: Bearer $JWT" \
+       -d '{"name":"OPC-Gateway","type":"Gateway","additionalInfo":{"gateway":true}}' \
+       | jq -r .id.id)
+   GATEWAY_TOKEN=$(curl -s "http://localhost:9090/api/device/$GATEWAY_ID/credentials" \
+       -H "X-Authorization: Bearer $JWT" | jq -r .credentialsId)
+   echo "Gateway token: $GATEWAY_TOKEN"
+   ```
+
+5. **Importar el flow en NR y configurar credentials del broker**.
+   El `flows.json` del repo se carga automáticamente al arrancar NR
+   porque vive en el bind mount `truedata-nodered/data/flows.json`.
+   Pero **`flows_cred.json` no se commitea** (encriptado con un
+   `credentialSecret` por instancia, no portable). Hay que setear el
+   token del Gateway como credential del nodo `mqtt-broker` manualmente:
+   - Login en `http://localhost:1880` (NR UI) con usuario `tenant` /
+     password (ver §B.4 — deuda).
+   - Editar el config node "TB Gateway" → tab Security → user =
+     `$GATEWAY_TOKEN` → Update → Deploy.
+
+6. **Validar que el pipeline funciona end-to-end**:
+   ```
+   curl -s -X POST http://localhost:1880/api/opc-ingest \
+       -H "Content-Type: application/json" \
+       -d "{\"ts\": $(date +%s%3N), \"values\": {\"POT_CCM\": 42.0}}"
+   ```
+   Esperado: `{"status":"ok","tags":1}`.
+
+   Verificar que el device `POT_CCM` aparece en TB con
+   `type: sensor_planta` (auto-provisionado vía connect del flow):
+   ```
+   curl -s "http://localhost:9090/api/tenant/devices?deviceName=POT_CCM" \
+       -H "X-Authorization: Bearer $JWT" | jq '{name, type}'
+   ```
+   Esperado: `{"name": "POT_CCM", "type": "sensor_planta"}`.
+
+**Notas operacionales**:
+
+- Salida ML inference: por defecto silenciada (`flow.ML_INFERENCE_URL`
+  no set). Para activar (solo en dev con `NR_ADMIN_ENABLED=true` en
+  el compose, ya seteado en `truedata-nodered/docker-compose.yml`):
+  ```
+  curl -s -X POST http://localhost:1880/admin/set-ml-url \
+      -H "Content-Type: application/json" \
+      -d '{"url":"http://<ml-host>:<port>/api/inference"}'
+  ```
+- En **producción**, la variable `NR_ADMIN_ENABLED` debe NO estar
+  seteada (eliminarla del compose de prod). Los endpoints `/admin/*`
+  devolverán 404 byte-identical a un path inexistente, sin leak.
+- `adminAuth` de NR usa `tenant` con password no recuperable (deuda
+  documentada en §B.4). Para sesiones de desarrollo nuevas: regenerar
+  hash bcrypt o seguir el bypass de §B.4.
