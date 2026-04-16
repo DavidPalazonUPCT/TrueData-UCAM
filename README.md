@@ -10,17 +10,28 @@ GitLab monorepo via Merge Requests; the contribution roadmap lives at
 
 ## Service Architecture
 
-Services share an external Docker network `truedata_iot_network`
-(subnet `172.25.0.0/24`):
+Services share an external Docker network `truedata_iot_network`.
 
-| Directory | Services | IP | Port |
-|---|---|---|---|
-| `truedata-thingsboard/` | ThingsBoard + PostgreSQL | 172.25.0.2, 172.25.0.23 | 9090, 1883, 7070, 5432 |
-| `truedata-nodered/`     | Node-RED                 | 172.25.0.3              | 1880 |
+| Directory | Services | Port |
+|---|---|---|
+| `truedata-thingsboard/` | ThingsBoard + PostgreSQL | 9090, 1883, 7070, 5432 |
+| `truedata-nodered/`     | Node-RED                 | 1880 |
 
 Detailed module guides:
 - [ThingsBoard guide](truedata-thingsboard/README.md)
 - [Node-RED guide](truedata-nodered/README.md)
+
+## Documentation
+
+- [Architecture overview + ADR index](docs/architecture/README.md) —
+  high-level diagram and the chain ADR-001 → ADR-002 → ADR-003.
+- Integration contracts:
+  - [`POST /api/opc-ingest`](docs/contracts/opc-ingest.md) — for the
+    OPC client team (cliente OPC → Node-RED).
+  - [`POST /api/inference`](docs/contracts/ml-inference.md) — for the
+    ML team (Node-RED → ML service).
+- [PLAN-001](docs/architecture/PLAN-001) — phased implementation plan
+  for the v2 pipeline (current status: Fase 2.2 completed).
 
 ## Project structure
 
