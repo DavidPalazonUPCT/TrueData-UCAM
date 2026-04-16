@@ -1,25 +1,27 @@
 # Contrato ML Inference — `POST /api/inference`
 
-Contrato HTTP entre el pipeline TrueData (Node-RED) y el **servicio
-ML** de inferencia. Este documento es la referencia de implementación
-para el equipo que desarrolla y opera el servicio ML.
+Contrato HTTP entre **Node-RED** y el **servicio ML** de inferencia.
+Este documento es la referencia de implementación para el equipo que
+desarrolla y opera el servicio ML.
 
 ---
 
 ## Resumen del contrato
 
-### Qué ofrece UCAM
+### Qué ofrece Node-RED
 
 - Un `POST` HTTP por cada scan del PLC al endpoint del servicio ML,
-  emitido por Node-RED en paralelo a la persistencia en ThingsBoard.
+  emitido en paralelo a la persistencia en ThingsBoard.
 - Un body JSON compacto con el timestamp del scan y todas las lecturas
   (`{ts, sensors}`), sin pre-procesado ni filtrado.
 - Despacho independiente: la disponibilidad y latencia del servicio ML
-  no afectan a la persistencia en TB ni al acuse al servicio OPC.
-- Persistencia completa del scan en TB, disponible por REST API como
-  fuente de verdad para backfill.
+  no afectan a la persistencia en ThingsBoard ni al acuse al servicio
+  OPC.
+- El scan completo queda persistido en ThingsBoard vía el otro camino
+  del pipeline, disponible por REST API como fuente de verdad para
+  backfill.
 
-### Qué necesita UCAM del servicio ML
+### Qué necesita Node-RED del servicio ML
 
 - Un endpoint HTTP accesible que acepte POST con `Content-Type:
   application/json`.
@@ -140,10 +142,10 @@ escribe sus outputs a ThingsBoard por el canal que decida (REST API
 de TB, MQTT, etc.) y, si corresponde, a otros consumidores downstream
 (blockchain, etc.).
 
-UCAM puede pre-provisionar en TB las entidades que el servicio ML
-necesite para escribir sus resultados (un device "inference results",
-un profile con rule chain específica, calculated fields, etc.) — ver
-la pregunta abierta 3 al final.
+Las entidades en ThingsBoard que el servicio ML necesite para escribir
+sus resultados (un device "inference results", un profile con rule
+chain específica, calculated fields, etc.) se pueden pre-provisionar
+desde el deploy pipeline — ver la pregunta abierta 3 al final.
 
 ### A4 — El servicio ML no depende de NR más allá de recibir el scan
 
@@ -217,10 +219,10 @@ Puntos a alinear antes de pasar a entorno compartido.
    estructural.
 
 3. **Writeback a TB: formato y topología.** ¿Cómo escribirá el servicio
-   ML sus resultados en TB — REST API, MQTT, qué device(s)? UCAM puede
-   pre-provisionar las entidades necesarias (device "inference
-   results", profile específico, rule chain) si se acuerda el diseño
-   con antelación.
+   ML sus resultados en TB — REST API, MQTT, qué device(s)? Las
+   entidades necesarias (device "inference results", profile específico,
+   rule chain) se pueden pre-provisionar desde el deploy pipeline si se
+   acuerda el diseño con antelación.
 
 4. **Estrategia de scans perdidos.** ¿El servicio ML implementará
    backfill contra la REST API de TB para recuperar ventanas perdidas

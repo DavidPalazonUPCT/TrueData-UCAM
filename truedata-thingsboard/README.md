@@ -1,4 +1,4 @@
-# ThingsBoard — TrueData pipeline v2
+# ThingsBoard — pipeline v2
 
 ThingsBoard es la fuente de verdad del pipeline v2: recibe telemetría
 per-device desde Node-RED vía Gateway MQTT API, persiste timeseries, y

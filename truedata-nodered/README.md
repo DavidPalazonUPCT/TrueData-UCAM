@@ -1,4 +1,4 @@
-# Node-RED — TrueData pipeline v2
+# Node-RED — pipeline v2
 
 Node-RED es el pre-procesador y router del pipeline v2: recibe el scan
 bulk del OPC Client vía HTTP, publica telemetría a ThingsBoard por

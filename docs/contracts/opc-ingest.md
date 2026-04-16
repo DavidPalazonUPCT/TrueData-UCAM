@@ -1,25 +1,26 @@
 # Contrato OPC Ingest — `POST /api/opc-ingest`
 
-Contrato HTTP entre el **servicio OPC** y el pipeline TrueData operado
-por UCAM (Node-RED + ThingsBoard). Este documento es la referencia de
-implementación para el equipo que desarrolla y opera el servicio OPC.
+Contrato HTTP entre el **servicio OPC** y **Node-RED**, con
+**ThingsBoard** como sistema de persistencia downstream. Este documento
+es la referencia de implementación para el equipo que desarrolla y
+opera el servicio OPC.
 
 ---
 
 ## Resumen del contrato
 
-### Qué ofrece UCAM
+### Qué ofrece Node-RED
 
-- Un endpoint HTTP (`POST /api/opc-ingest`) expuesto por Node-RED que
-  acepta el scan bulk de cada ciclo del PLC.
+- Un endpoint HTTP (`POST /api/opc-ingest`) que acepta el scan bulk de
+  cada ciclo del PLC.
 - Validación síncrona del payload con código de respuesta inmediato
   (`200` / `400`).
-- Persistencia de la telemetría en ThingsBoard por un camino
-  independiente (Gateway MQTT API, transparente al servicio OPC).
-- Auto-provisioning de devices per-tag en TB: un tag nuevo no requiere
-  intervención manual.
+- Publicación de la telemetría a ThingsBoard por un camino independiente
+  (Gateway MQTT API, transparente al servicio OPC).
+- Auto-provisioning de devices per-tag en ThingsBoard: un tag nuevo no
+  requiere intervención manual.
 
-### Qué necesita UCAM del servicio OPC
+### Qué necesita Node-RED del servicio OPC
 
 - Un `POST` HTTP por cada scan del PLC al endpoint acordado.
 - Cuerpo JSON con **timestamp client-side del PLC** (`ts`, Unix ms) y
