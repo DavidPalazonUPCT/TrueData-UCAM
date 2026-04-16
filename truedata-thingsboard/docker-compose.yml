@@ -10,19 +10,18 @@ services:
       - "5683-5688:5683-5688/udp"
     environment:
       DATABASE_HOST: db
-      DATABASE_PORT: 5433
+      DATABASE_PORT: 5432
       DATABASE_TYPE: postgresql
       DATABASE_NAME: thingsboard
-      DATABASE_USER: tenant@thingsboard.org
-      DATABASE_PASSWORD: tenant
+      DATABASE_USER: thingsboard
+      DATABASE_PASSWORD: thingsboard_password
     volumes:
-      - ./tb-data:/data
-      - ./tb-logs:/var/log/thingsboard
+      - tb-data:/data
+      - tb-logs:/var/log/thingsboard
     depends_on:
       - db
     networks:
-      iot_network:
-        ipv4_address: 172.25.0.2
+      - iot_network
 
   # Servicio de ThingsBoard db
   db:
@@ -36,12 +35,16 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     networks:
-      iot_network:
-        ipv4_address: 172.25.0.23
+      - iot_network
 
 networks:
   iot_network:
     external: true                       # Esto le dice a Docker que la red ya existe
     name: truedata_iot_network  # Usa el nombre de la red que ya existe
+
+volumes:
+  tb-data:
+  tb-logs:
+  postgres-data:
