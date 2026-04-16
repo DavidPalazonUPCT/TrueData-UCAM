@@ -1502,17 +1502,17 @@ const values = msg.payload.values
 // Device connect API). Ver D.7 para el razonamiento del profile.
 
 const DEVICE_PROFILE = flow.get("DEVICE_PROFILE") || "sensor_planta"
-const seen = flow.get("connectedDevices") || new Set()
+const seen = flow.get("connectedDevices") || {}
 const connectMsgs = []
 
 for each tagName in Object.keys(values):
-    if not seen.has(tagName):
+    if not seen[tagName]:
         connectMsgs.push({
             payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),
             topic: "v1/gateway/connect",
             qos: 1
         })
-        seen.add(tagName)
+        seen[tagName] = true
 
 flow.set("connectedDevices", seen)
 
@@ -1547,23 +1547,33 @@ if mlUrl:
       url: mlUrl,
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      timeout: 5000
+      requestTimeout: 5000
     }
 
 return [output1, mlMsg, null]
 ```
 
-#### D.4.1 — Notas operacionales sobre el PASO 2a
+#### D.4.1 — Notas operacionales
 
 1. **Cache en memoria del flow, no persistida a disco**.
-   `flow.connectedDevices` es un `Set` mantenido en el context del flow
-   de Node-RED. Tras un restart de NR (o un re-deploy del flow), el Set
-   se vacía. El primer scan post-restart volverá a emitir `connect`
-   para **todos los devices del scan** (hasta N mensajes adicionales una
-   sola vez). Una vez poblado, los scans subsiguientes solo emiten
-   `telemetry`.
+   `flow.connectedDevices` es un Object mantenido en el context del
+   flow de Node-RED. Tras un restart de NR (o un re-deploy del flow),
+   el Object se vacía. El primer scan post-restart volverá a emitir
+   `connect` para **todos los devices del scan** (hasta N mensajes
+   adicionales una sola vez). Una vez poblado, los scans subsiguientes
+   solo emiten `telemetry`.
 
-2. **Tolerancia a connects repetidos — interpretación a validar en
+2. **Object plano `{tagName: true}` en vez de `Set` para
+   `connectedDevices`**. El store por defecto de Node-RED es `memory`
+   ([doc oficial §Context stores](https://nodered.org/docs/user-guide/context#context-stores)).
+   Si en el futuro se activa un store persistente (`localfilesystem`),
+   los valores se serializan a JSON, y `Set`/`Map` no son
+   JSON-serializable — se guardarían vacíos o fallarían silenciosamente.
+   El Object plano funciona en ambos stores, es JSON-serializable, y
+   semánticamente equivalente para lookup por clave. Trade-off
+   aceptado: pérdida del método `.has()` a cambio de portabilidad.
+
+3. **Tolerancia a connects repetidos — interpretación a validar en
    Fase 2.1**. La doc oficial TB Gateway MQTT (§Device connect API)
    afirma el comportamiento solo para devices nuevos: *"If a device
    with the given name does not exist, ThingsBoard creates it
@@ -1578,7 +1588,7 @@ return [output1, mlMsg, null]
    estrategia (p. ej. persistir `connectedDevices` a disco para
    preservarlo entre restarts).
 
-3. **Por qué connect en vez de solo telemetry** (resumen de la doc
+4. **Por qué connect en vez de solo telemetry** (resumen de la doc
    oficial):
    - Telemetry API: *"If the device with the given name does not
      exist, ThingsBoard creates it automatically with `default` profile
@@ -1591,13 +1601,46 @@ return [output1, mlMsg, null]
      `sensor_planta` lleva asociados (ver D.7). Los connects son por
      tanto **necesarios**, no opcionales.
 
-4. **Output 1: objeto único vs array**. El nodo `mqtt-out` de Node-RED
-   acepta ambas formas: un mensaje suelto se publica como un único
-   MQTT PUBLISH; un array de mensajes se publica como N PUBLISH en
-   orden. La lógica elige una u otra para no emitir arrays de un solo
-   elemento innecesariamente (estética; ambas formas son correctas).
-   Esta semántica de `mqtt-out` se validará en Fase 2.1 con la doc
-   oficial de Node-RED antes de implementar.
+5. **Output 1: objeto único vs array — comportamiento del runtime
+   del function node, no de `mqtt-out`**. Cuando el function node
+   retorna un array anidado en una posición de salida (p.ej.
+   `[...connectMsgs, mqttMsg]` en output 1), Node-RED desempaca el
+   array y emite cada elemento como un mensaje independiente al nodo
+   downstream, en orden. Confirmado en doc oficial
+   ([writing-functions §Multiple Messages](https://nodered.org/docs/user-guide/writing-functions#multiple-messages)):
+   *"When multiple messages are returned for an output, subsequent
+   nodes will receive the messages one at a time in the order they
+   were returned."* Cualquier nodo downstream (no solo `mqtt-out`)
+   recibiría los mensajes desempaquetados igual; `mqtt-out` solo ve
+   mensajes individuales. Alternativamente el function node podría
+   usar `node.send([[connect1, connect2, mqttMsg], mlMsg, null])`
+   con idéntico efecto; se prefiere `return` por simplicidad
+   sincrónica.
+
+6. **Timeout de `http request` via `msg.requestTimeout`**. El nodo
+   core `http request` no expone timeout como propiedad del node; el
+   mecanismo es `msg.requestTimeout` (número ≥ 1, en milisegundos)
+   sobrescribiendo el default global (`RED.settings.httpRequestTimeout`,
+   120000 ms por defecto). Confirmado literalmente en el source del
+   nodo
+   ([`21-httprequest.js`](https://github.com/node-red/node-red/blob/master/packages/node_modules/@node-red/nodes/core/network/21-httprequest.js)):
+   ```javascript
+   if (msg.requestTimeout !== undefined) {
+       if (isNaN(msg.requestTimeout)) {
+           node.warn(RED._("httpin.errors.timeout-isnan"));
+       } else if (msg.requestTimeout < 1) {
+           node.warn(RED._("httpin.errors.timeout-isnegative"));
+       } else {
+           opts.timeout = { request: msg.requestTimeout };
+       }
+   }
+   ```
+   Sin esta propiedad, el timeout efectivo sería 120 s — demasiado
+   para nuestro fire-and-forget. Comportamiento en timeout: el nodo
+   loguea un error en el debug sidebar (`err.code === 'ETIMEDOUT'`) y
+   emite un mensaje de salida con `msg.payload = err.toString() + " : " + url`
+   y `msg.statusCode = err.code`. Para el flow v2 esto es ignorado
+   (mismo trato que cualquier 4xx/5xx).
 
 ### D.5 — Ejemplo end-to-end con datos reales de ESAMUR
 
