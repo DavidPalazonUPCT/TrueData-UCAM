@@ -1,5 +1,6 @@
 # Runtime data directories
-/truedata-nodered/data/
+/truedata-nodered/data/*
+!/truedata-nodered/data/flows.json
 /truedata-thingsboard/tb-data/
 /truedata-thingsboard/tb-logs/
 /truedata-thingsboard/postgres-data/
@@ -50,6 +51,10 @@ src/dataloader/Credenciales*.txt
 deploy/*/DeviceimportCredentials_*.csv
 deploy/*/OthersimportCredentials_*.csv
 deploy/*/Datos Thingsboard*.txt
+
+# Node-RED encrypted credentials file (instance-specific credentialSecret;
+# not portable across instances. Each deployment sets its own credentials)
+truedata-nodered/data/flows_cred.json
 
 # Deliverable docs
 docs/Entregable_*.md

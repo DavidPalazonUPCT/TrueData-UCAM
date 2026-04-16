@@ -7,7 +7,8 @@
 - **Estado de ejecución:**
   - Fase 0 — ✅ **COMPLETADA (2026-04-16)**, 4/4 criterios validados. Ver §Resultado Fase 0.
   - Fase 1 — ✅ **COMPLETADA (2026-04-16)**, 3/3 criterios validados. Ver §Resultado Fase 1.
-  - Fase 2 a 5 — pendientes.
+  - Fase 2.1 — ✅ **COMPLETADA (2026-04-16)**, 6/6 tests PASS. Salida 1 (mqtt-out → TB) operativa. Ver §Resultado Fase 2.1.
+  - Fase 2.2 (salida ML), Fase 2.3 (versionado flow.json), Fases 3 a 5 — pendientes.
 
 ---
 
@@ -606,12 +607,50 @@ el OPC Client si NR no puede publicar.
 
 ### Criterio de aceptación Fase 2
 
-- [ ] POST a `/api/opc-ingest` con payload de 27 tags devuelve 200
-- [ ] Los 27 tags aparecen como telemetría en los 27 devices de TB
-- [ ] Todos los tags del mismo scan tienen el MISMO timestamp (client-side)
-- [ ] El servicio ML recibe un POST con los 27 sensores juntos
+**Fase 2.1 (salida 1 → TB) — COMPLETADA 2026-04-16:**
+
+- [x] POST a `/api/opc-ingest` con payload de N tags devuelve 200
+- [x] Los N tags aparecen como telemetría en los N devices de TB
+- [x] Todos los tags del mismo scan tienen el MISMO timestamp (client-side)
+- [x] POST con payload vacío o malformado devuelve 400 (no crash)
+
+**Fase 2.2 (salida 2 → ML) — pendiente:**
+
+- [ ] El servicio ML recibe un POST con los N sensores juntos
 - [ ] Si ML está caído, TB sigue recibiendo datos normalmente
-- [ ] POST con payload vacío o malformado devuelve 400 (no crash)
+
+### Resultado Fase 2.1 (ejecutada 2026-04-16)
+
+Flow Node-RED implementado siguiendo D.4 del commit `933d793`:
+`http-in /api/opc-ingest → function (validate + connects + telemetry +
+ack) → mqtt-out + http-response`. Sin salida ML (queda para Fase 2.2).
+
+| # | Test | Resultado | Evidencia |
+|---|---|---|---|
+| 1 | 1 tag válido | ✅ | `200 {"status":"ok","tags":1}`. Device auto-creado con `type: sensor_planta`. ts preservado |
+| 2 | 31 tags ESAMUR (todos los del CSV) | ✅ | `200 {"status":"ok","tags":31}`. 31 devices presentes en TB |
+| 3 | `ts` ausente | ✅ | `400 {"status":"error","reason":"ts missing or not number"}` |
+| 4 | `values` vacío | ✅ | `400 {"status":"error","reason":"values missing or empty"}` |
+| 5 | Idempotencia (replay scan x2) | ✅ | Sin duplicación (`count=31`), ts actualizado, sin errores |
+| 6 | Restart NR + scan post-restart | ✅ | `200 {"tags":31}`. Cache repobló connects sin duplicar devices |
+
+**Hallazgos confirmados empíricamente:**
+
+- TB auto-crea el `device profile sensor_planta` (vacío) la primera vez
+  que recibe `connect` con `type` desconocido — coherente con doc oficial
+  TB Gateway MQTT API y con D.7.3.
+- Idempotencia de `connect` repetidos validada (ver actualización a D.4
+  nota 3).
+
+**Decisión de implementación distinta del aspiracional D.2.3:**
+
+El flow responde `200` inmediatamente tras la validación pasada, sin
+esperar al PUBACK del mqtt-out. La respuesta `500` condicional al
+PUBACK que documenta D.2.3 queda como aspiracional (ver nota allí).
+Razón: implementar correlación async PUBACK → request HTTP requiere
+state externo o complete-node + buffer; complejidad significativa para
+un beneficio marginal hoy. Si en producción aparece un caso real donde
+el `500` condicional habría ayudado, se implementa entonces.
 
 ---
 
@@ -1119,6 +1158,18 @@ root funciona pero es contrario a best practices de seguridad
 (principio de menor privilegio). Aceptable para desarrollo local; antes
 de producción considerar migrar a usuario no-root + named volume.
 
+### B.4 — `adminAuth` con password no recuperable (deuda)
+
+`settings.js` tiene `adminAuth` activo con usuario `tenant` y password
+hash bcrypt. El plain-text del password no está en el repo (vive en
+`ParametrosConfiguracion.txt`, artefacto runtime no versionado). Para
+ejecutar tests vía Admin API en sesiones de desarrollo se requiere
+conocer el password. **Deuda**: regenerar un hash bcrypt con password
+conocido + documentar el procedimiento, o introducir un mecanismo de
+bypass para entornos de desarrollo (p.ej. `adminAuth` condicional a
+`NODE_ENV !== "production"`). No bloqueante para producción — la
+baseline actual es segura.
+
 ---
 
 ## Apéndice C — Reestructuración del Compose (Fase 1, 2026-04-16)
@@ -1356,6 +1407,17 @@ rígido que acople el flow a un cliente concreto:
 | `400 Bad Request` | `{"status": "error", "reason": "<motivo>"}` | `ts` ausente/no numérico, `values` ausente/vacío/no-objeto |
 | `500 Internal Server Error` | `{"status": "error", "reason": "mqtt publish failed"}` | MQTT publish a TB falló (broker caído, timeout) |
 
+> **Nota — implementación Fase 2.1**: el `500` condicional al PUBACK
+> es **aspiracional** y NO está implementado en el flow actual de Fase
+> 2.1. La implementación actual responde `200` inmediatamente tras la
+> validación pasada, sin esperar al PUBACK del mqtt-out. Razón:
+> correlacionar la respuesta async del mqtt-out con la request HTTP
+> original requiere state externo o complete-node + buffer; complejidad
+> significativa para el beneficio marginal hoy (cualquier fallo MQTT se
+> ve en logs de NR + falta de telemetría en TB). Se implementará si en
+> producción aparece un caso real donde el `500` condicional habría
+> ayudado.
+
 #### D.2.4 — Razonamiento del diseño
 
 - **`ts` obligatorio con rechazo 400 duro**: un silent default
@@ -1573,20 +1635,19 @@ return [output1, mlMsg, null]
    semánticamente equivalente para lookup por clave. Trade-off
    aceptado: pérdida del método `.has()` a cambio de portabilidad.
 
-3. **Tolerancia a connects repetidos — interpretación a validar en
-   Fase 2.1**. La doc oficial TB Gateway MQTT (§Device connect API)
-   afirma el comportamiento solo para devices nuevos: *"If a device
-   with the given name does not exist, ThingsBoard creates it
-   automatically"*. **No hay afirmación explícita** sobre qué hace TB
-   con un `connect` para un device que ya existe. Por inferencia
-   razonable (si "creates if not exists" es el único efecto descrito,
-   repetir el mensaje no debería duplicar ni resetear), **asumimos
-   idempotencia**, pero es interpretación nuestra de la doc. Fase 2.1
-   incluirá un test específico: publicar dos `connect` consecutivos
-   para el mismo device y verificar que TB no duplica, no cambia el
-   profile, y no genera error. Si el test fallara, ajustaríamos la
-   estrategia (p. ej. persistir `connectedDevices` a disco para
-   preservarlo entre restarts).
+3. **Tolerancia a connects repetidos — validado empíricamente en Fase
+   2.1**. La doc oficial TB Gateway MQTT (§Device connect API) afirma
+   el comportamiento solo para devices nuevos: *"If a device with the
+   given name does not exist, ThingsBoard creates it automatically"*.
+   No hay afirmación explícita sobre qué hace TB con un `connect` para
+   un device que ya existe. **Idempotencia validada empíricamente en
+   Fase 2.1** con N=31 devices (los del CSV de ESAMUR), 2 replays
+   consecutivos del scan + 1 restart de NR seguido de un scan completo:
+   en los tres escenarios TB no duplicó devices, no cambió el profile,
+   y no devolvió errores. El cache `flow.connectedDevices` puede por
+   tanto vaciarse en cada restart sin temor — el coste de los N
+   connects redundantes del primer scan post-restart es benigno (ver
+   §Resultado Fase 2.1).
 
 4. **Por qué connect en vez de solo telemetry** (resumen de la doc
    oficial):

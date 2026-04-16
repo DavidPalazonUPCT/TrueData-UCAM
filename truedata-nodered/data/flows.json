@@ -1,0 +1,99 @@
+[
+    {
+        "id": "tab_opc_v2",
+        "type": "tab",
+        "label": "OPC Ingest v2 (Fase 2.1)",
+        "disabled": false,
+        "info": "MR Fase 2.1 - HTTP-in + function + mqtt-out (sin ML)"
+    },
+    {
+        "id": "broker_tb",
+        "type": "mqtt-broker",
+        "name": "TB Gateway",
+        "broker": "thingsboard",
+        "port": "1883",
+        "clientid": "nodered-gateway-fase21",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": ""
+    },
+    {
+        "id": "http_in_opc",
+        "type": "http in",
+        "z": "tab_opc_v2",
+        "name": "OPC Bulk Ingest",
+        "url": "/api/opc-ingest",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 130,
+        "y": 120,
+        "wires": [
+            [
+                "fn_main"
+            ]
+        ]
+    },
+    {
+        "id": "fn_main",
+        "type": "function",
+        "z": "tab_opc_v2",
+        "name": "validate+connects+telemetry+ack",
+        "func": "// Validation\nconst ts = msg.payload && msg.payload.ts;\nconst values = msg.payload && msg.payload.values;\n\nif (typeof ts !== \"number\") {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"ts missing or not number\" };\n    return [null, msg];\n}\nif (typeof values !== \"object\" || values === null || Object.keys(values).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"values missing or empty\" };\n    return [null, msg];\n}\n\n// PASO 2a: BUILD CONNECT MESSAGES (devices not seen yet)\nconst DEVICE_PROFILE = flow.get(\"DEVICE_PROFILE\") || \"sensor_planta\";\nconst seen = flow.get(\"connectedDevices\") || {};\nconst connectMsgs = [];\n\nfor (const tagName of Object.keys(values)) {\n    if (!seen[tagName]) {\n        connectMsgs.push({\n            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),\n            topic: \"v1/gateway/connect\",\n            qos: 1\n        });\n        seen[tagName] = true;\n    }\n}\nflow.set(\"connectedDevices\", seen);\n\n// PASO 2b: BUILD GATEWAY MQTT TELEMETRY PAYLOAD\nconst gatewayPayload = {};\nfor (const [tag, value] of Object.entries(values)) {\n    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }];\n}\nconst mqttMsg = {\n    payload: JSON.stringify(gatewayPayload),\n    topic: \"v1/gateway/telemetry\",\n    qos: 1\n};\n\n// Output 1: array if connects, single object otherwise\nconst output1 = connectMsgs.length > 0\n    ? [...connectMsgs, mqttMsg]\n    : mqttMsg;\n\n// HTTP 200 ack (preserves req/res)\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", tags: Object.keys(values).length };\n\nreturn [output1, msg];\n",
+        "outputs": 2,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 120,
+        "wires": [
+            [
+                "mqtt_out_tb"
+            ],
+            [
+                "http_resp"
+            ]
+        ]
+    },
+    {
+        "id": "mqtt_out_tb",
+        "type": "mqtt out",
+        "z": "tab_opc_v2",
+        "name": "TB Gateway",
+        "topic": "",
+        "qos": "",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "broker_tb",
+        "x": 700,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "http_resp",
+        "type": "http response",
+        "z": "tab_opc_v2",
+        "name": "Response",
+        "statusCode": "",
+        "headers": {},
+        "x": 700,
+        "y": 160,
+        "wires": []
+    }
+]
