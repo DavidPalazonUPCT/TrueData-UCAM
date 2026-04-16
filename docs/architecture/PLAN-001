@@ -8,7 +8,9 @@
   - Fase 0 — ✅ **COMPLETADA (2026-04-16)**, 4/4 criterios validados. Ver §Resultado Fase 0.
   - Fase 1 — ✅ **COMPLETADA (2026-04-16)**, 3/3 criterios validados. Ver §Resultado Fase 1.
   - Fase 2.1 — ✅ **COMPLETADA (2026-04-16)**, 6/6 tests PASS. Salida 1 (mqtt-out → TB) operativa. Ver §Resultado Fase 2.1.
-  - Fase 2.2 (salida ML), Fase 2.3 (versionado flow.json), Fases 3 a 5 — pendientes.
+  - Fase 2.2 — ✅ **COMPLETADA (2026-04-16)**, 4/4 tests PASS. Salida 2 (http-request → ML) operativa con timeout 5s + fallback silencioso. Ver §Resultado Fase 2.2.
+  - Fase 2.3 (versionado flow.json) implícitamente integrada en commits 2.1 y 2.2.
+  - Fases 3 a 5 — pendientes.
 
 ---
 
@@ -614,10 +616,10 @@ el OPC Client si NR no puede publicar.
 - [x] Todos los tags del mismo scan tienen el MISMO timestamp (client-side)
 - [x] POST con payload vacío o malformado devuelve 400 (no crash)
 
-**Fase 2.2 (salida 2 → ML) — pendiente:**
+**Fase 2.2 (salida 2 → ML) — COMPLETADA 2026-04-16:**
 
-- [ ] El servicio ML recibe un POST con los N sensores juntos
-- [ ] Si ML está caído, TB sigue recibiendo datos normalmente
+- [x] El servicio ML recibe un POST con los N sensores juntos
+- [x] Si ML está caído, TB sigue recibiendo datos normalmente
 
 ### Resultado Fase 2.1 (ejecutada 2026-04-16)
 
@@ -651,6 +653,49 @@ Razón: implementar correlación async PUBACK → request HTTP requiere
 state externo o complete-node + buffer; complejidad significativa para
 un beneficio marginal hoy. Si en producción aparece un caso real donde
 el `500` condicional habría ayudado, se implementa entonces.
+
+### Resultado Fase 2.2 (ejecutada 2026-04-16)
+
+Flow Node-RED extendido con la salida 2 (`http-request` a ML inference)
+siguiendo D.3 + D.4 (PASO 3): output 2 emite `mlMsg` solo si
+`flow.ML_INFERENCE_URL` está configurada; si no, salida silenciada.
+Timeout 5 s vía `msg.requestTimeout` confirmado funcional. Se añadieron
+tres endpoints auxiliares de testing (`/admin/set-ml-url`,
+`/admin/clear-ml-url`, `/admin/get-ml-url`) para controlar la URL en
+runtime sin restart de NR; estos endpoints son **helpers de
+desarrollo** y deben eliminarse o protegerse en producción.
+
+| # | Test | Resultado | Evidencia |
+|---|---|---|---|
+| 1 | ML recibe body correcto | ✅ | Tras `set-ml-url` apuntando a mock `host.docker.internal:5000`, POST scan ESAMUR (31 tags) → mock loguea body con `keys=['sensors','ts']`, `sensors count=31`, `ts` exacto al enviado |
+| 2 | ML caído no bloquea TB | ✅ | Mock detenido, URL configurada → POST scan responde `200 {"tags":2}` en 19 ms (sin esperar timeout). TB recibe telemetría OK. NR loguea `RequestError: connect ECONNREFUSED 192.168.65.254:5000` (visibilidad para debug) sin detener el flow |
+| 3 | Timeout 5 s funciona | ✅ | Mock arrancado en modo `hang` (acepta connection, nunca responde) → mock loguea POST a `12:36:22`; NR loguea `[error] [http request:ML Inference] no response from server` exactamente a `12:36:27` (5 s exactos). Respuesta al cliente OPC: 11 ms (fire-and-forget OK). Confirma D.4 nota 6: `requestTimeout: 5000` aplica como esperado, no el default de 120 s |
+| 4 | URL no set → salida silenciada | ✅ | Sin `flow.ML_INFERENCE_URL` (`null`), POST scan responde `200 {"tags":1}` en 9 ms. Mock log vacío (mock no fue contactado). TB recibe telemetría OK. Sin errores en NR |
+
+**Hallazgos confirmados empíricamente en Fase 2.2:**
+
+- El mensaje de error de timeout coincide con el que documenta D.4
+  nota 6 a partir del source `21-httprequest.js`: *"no response from
+  server"* (correspondiente a `RED._("common.notification.errors.no-response")`
+  para `err.code === 'ETIMEDOUT'`).
+- Fire-and-forget validado: el ack HTTP al cliente OPC se devuelve
+  por output 3 sin esperar al output 2. La respuesta del ML (o su
+  ausencia) es independiente.
+- Independencia TB ↔ ML (ADR-003): un fallo o timeout del ML no
+  afecta a la persistencia en TB ni al ack al cliente OPC.
+
+**Endpoints auxiliares añadidos (testing helpers):**
+
+- `POST /admin/set-ml-url` con body `{"url": "..."}` — setea
+  `flow.ML_INFERENCE_URL`.
+- `POST /admin/clear-ml-url` — borra la variable.
+- `GET /admin/get-ml-url` — devuelve el valor actual.
+
+Estos endpoints permiten cambiar la configuración del ML en runtime
+sin reiniciar NR y sin tocar `settings.js`. Útiles en desarrollo y
+testing, pero **no deberían exponerse en producción** sin auth
+adecuada (vivirían bajo `httpAdminRoot` separado o con `httpNodeAuth`).
+Apuntar como deuda al ir a producción.
 
 ---
 

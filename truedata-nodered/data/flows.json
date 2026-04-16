@@ -2,9 +2,9 @@
     {
         "id": "tab_opc_v2",
         "type": "tab",
-        "label": "OPC Ingest v2 (Fase 2.1)",
+        "label": "OPC Ingest v2 (Fase 2.2)",
         "disabled": false,
-        "info": "MR Fase 2.1 - HTTP-in + function + mqtt-out (sin ML)"
+        "info": "Fase 2.2 - HTTP-in + function + mqtt-out + http-request ML"
     },
     {
         "id": "broker_tb",
@@ -12,7 +12,7 @@
         "name": "TB Gateway",
         "broker": "thingsboard",
         "port": "1883",
-        "clientid": "nodered-gateway-fase21",
+        "clientid": "nodered-gateway-fase22",
         "autoConnect": true,
         "usetls": false,
         "protocolVersion": "4",
@@ -49,9 +49,9 @@
         "id": "fn_main",
         "type": "function",
         "z": "tab_opc_v2",
-        "name": "validate+connects+telemetry+ack",
-        "func": "// Validation\nconst ts = msg.payload && msg.payload.ts;\nconst values = msg.payload && msg.payload.values;\n\nif (typeof ts !== \"number\") {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"ts missing or not number\" };\n    return [null, msg];\n}\nif (typeof values !== \"object\" || values === null || Object.keys(values).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"values missing or empty\" };\n    return [null, msg];\n}\n\n// PASO 2a: BUILD CONNECT MESSAGES (devices not seen yet)\nconst DEVICE_PROFILE = flow.get(\"DEVICE_PROFILE\") || \"sensor_planta\";\nconst seen = flow.get(\"connectedDevices\") || {};\nconst connectMsgs = [];\n\nfor (const tagName of Object.keys(values)) {\n    if (!seen[tagName]) {\n        connectMsgs.push({\n            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),\n            topic: \"v1/gateway/connect\",\n            qos: 1\n        });\n        seen[tagName] = true;\n    }\n}\nflow.set(\"connectedDevices\", seen);\n\n// PASO 2b: BUILD GATEWAY MQTT TELEMETRY PAYLOAD\nconst gatewayPayload = {};\nfor (const [tag, value] of Object.entries(values)) {\n    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }];\n}\nconst mqttMsg = {\n    payload: JSON.stringify(gatewayPayload),\n    topic: \"v1/gateway/telemetry\",\n    qos: 1\n};\n\n// Output 1: array if connects, single object otherwise\nconst output1 = connectMsgs.length > 0\n    ? [...connectMsgs, mqttMsg]\n    : mqttMsg;\n\n// HTTP 200 ack (preserves req/res)\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", tags: Object.keys(values).length };\n\nreturn [output1, msg];\n",
-        "outputs": 2,
+        "name": "validate+connects+telemetry+ml+ack",
+        "func": "// Validation\nconst ts = msg.payload && msg.payload.ts;\nconst values = msg.payload && msg.payload.values;\n\nif (typeof ts !== \"number\") {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"ts missing or not number\" };\n    return [null, null, msg];\n}\nif (typeof values !== \"object\" || values === null || Object.keys(values).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"values missing or empty\" };\n    return [null, null, msg];\n}\n\n// PASO 2a: BUILD CONNECT MESSAGES (devices not seen yet)\nconst DEVICE_PROFILE = flow.get(\"DEVICE_PROFILE\") || \"sensor_planta\";\nconst seen = flow.get(\"connectedDevices\") || {};\nconst connectMsgs = [];\n\nfor (const tagName of Object.keys(values)) {\n    if (!seen[tagName]) {\n        connectMsgs.push({\n            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),\n            topic: \"v1/gateway/connect\",\n            qos: 1\n        });\n        seen[tagName] = true;\n    }\n}\nflow.set(\"connectedDevices\", seen);\n\n// PASO 2b: BUILD GATEWAY MQTT TELEMETRY PAYLOAD\nconst gatewayPayload = {};\nfor (const [tag, value] of Object.entries(values)) {\n    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }];\n}\nconst mqttMsg = {\n    payload: JSON.stringify(gatewayPayload),\n    topic: \"v1/gateway/telemetry\",\n    qos: 1\n};\nconst output1 = connectMsgs.length > 0\n    ? [...connectMsgs, mqttMsg]\n    : mqttMsg;\n\n// PASO 3: BUILD ML INFERENCE MESSAGE (only if URL configured)\nconst mlUrl = flow.get(\"ML_INFERENCE_URL\");\nlet mlMsg = null;\nif (mlUrl) {\n    mlMsg = {\n        payload: { ts: ts, sensors: values },\n        url: mlUrl,\n        method: \"POST\",\n        headers: { \"Content-Type\": \"application/json\" },\n        requestTimeout: 5000\n    };\n}\n\n// HTTP 200 ack (preserves req/res)\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", tags: Object.keys(values).length };\n\nreturn [output1, mlMsg, msg];\n",
+        "outputs": 3,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
@@ -61,6 +61,9 @@
         "wires": [
             [
                 "mqtt_out_tb"
+            ],
+            [
+                "http_req_ml"
             ],
             [
                 "http_resp"
@@ -82,8 +85,30 @@
         "expiry": "",
         "broker": "broker_tb",
         "x": 700,
-        "y": 80,
+        "y": 60,
         "wires": []
+    },
+    {
+        "id": "http_req_ml",
+        "type": "http request",
+        "z": "tab_opc_v2",
+        "name": "ML Inference",
+        "method": "use",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 700,
+        "y": 120,
+        "wires": [
+            []
+        ]
     },
     {
         "id": "http_resp",
@@ -93,7 +118,126 @@
         "statusCode": "",
         "headers": {},
         "x": 700,
-        "y": 160,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "http_in_set_url",
+        "type": "http in",
+        "z": "tab_opc_v2",
+        "name": "Admin: set ML URL",
+        "url": "/admin/set-ml-url",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 130,
+        "y": 320,
+        "wires": [
+            [
+                "fn_set_url"
+            ]
+        ]
+    },
+    {
+        "id": "fn_set_url",
+        "type": "function",
+        "z": "tab_opc_v2",
+        "name": "set",
+        "func": "const url = msg.payload && msg.payload.url;\nif (typeof url !== \"string\" || url.length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"url missing\" };\n    return msg;\n}\nflow.set(\"ML_INFERENCE_URL\", url);\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", url: url };\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 320,
+        "wires": [
+            [
+                "http_resp_admin"
+            ]
+        ]
+    },
+    {
+        "id": "http_in_clear_url",
+        "type": "http in",
+        "z": "tab_opc_v2",
+        "name": "Admin: clear ML URL",
+        "url": "/admin/clear-ml-url",
+        "method": "post",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 130,
+        "y": 380,
+        "wires": [
+            [
+                "fn_clear_url"
+            ]
+        ]
+    },
+    {
+        "id": "fn_clear_url",
+        "type": "function",
+        "z": "tab_opc_v2",
+        "name": "clear",
+        "func": "flow.set(\"ML_INFERENCE_URL\", undefined);\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", cleared: true };\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 380,
+        "wires": [
+            [
+                "http_resp_admin"
+            ]
+        ]
+    },
+    {
+        "id": "http_in_get_url",
+        "type": "http in",
+        "z": "tab_opc_v2",
+        "name": "Admin: get ML URL",
+        "url": "/admin/get-ml-url",
+        "method": "get",
+        "upload": false,
+        "swaggerDoc": "",
+        "x": 130,
+        "y": 440,
+        "wires": [
+            [
+                "fn_get_url"
+            ]
+        ]
+    },
+    {
+        "id": "fn_get_url",
+        "type": "function",
+        "z": "tab_opc_v2",
+        "name": "get",
+        "func": "msg.statusCode = 200;\nmsg.payload = { ML_INFERENCE_URL: flow.get(\"ML_INFERENCE_URL\") || null };\nreturn msg;\n",
+        "outputs": 1,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 440,
+        "wires": [
+            [
+                "http_resp_admin"
+            ]
+        ]
+    },
+    {
+        "id": "http_resp_admin",
+        "type": "http response",
+        "z": "tab_opc_v2",
+        "name": "Admin Response",
+        "statusCode": "",
+        "headers": {},
+        "x": 700,
+        "y": 380,
         "wires": []
     }
 ]
