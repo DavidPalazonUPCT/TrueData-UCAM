@@ -9,8 +9,9 @@ Gateway MQTT API, y dispara la inferencia ML en paralelo.
 - **Contratos de API:** ver
   [`docs/contracts/opc-ingest.md`](../docs/contracts/opc-ingest.md) y
   [`docs/contracts/ml-inference.md`](../docs/contracts/ml-inference.md).
-- **Documentación complementaria:** ver [`SETUP.md`](SETUP.md) para
-  la provisión del Gateway device y el setup end-to-end.
+- **Setup end-to-end:** ver [`docs/SETUP.md`](../docs/SETUP.md) (guía
+  cross-service: red Docker, Gateway en ThingsBoard, token en Node-RED,
+  validación).
 
 ---
 
@@ -66,7 +67,7 @@ access token del Gateway device de TB en la UI:
    <GATEWAY_TOKEN>` → Update → Deploy.
 
 El `GATEWAY_TOKEN` se genera al crear el Gateway device en TB. Ver
-[`SETUP.md`](SETUP.md) para el procedimiento completo.
+[`docs/SETUP.md`](../docs/SETUP.md) para el procedimiento completo.
 
 ---
 

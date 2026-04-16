@@ -30,11 +30,12 @@ Detailed module guides:
     OPC → Node-RED.
   - [`POST /api/inference`](docs/contracts/ml-inference.md) — Node-RED
     → servicio ML.
-- Per-service documentation lives next to each service:
+- [Setup guide (cross-service)](docs/SETUP.md) — red Docker, Gateway en
+  ThingsBoard, token en Node-RED, validación end-to-end.
+- Per-service documentation:
   - [`truedata-thingsboard/`](truedata-thingsboard/README.md) — README
-    + complementary docs (e.g. `DEVICE-PROFILE.md`).
-  - [`truedata-nodered/`](truedata-nodered/README.md) — README +
-    complementary docs (e.g. `SETUP.md`).
+    + [`DEVICE-PROFILE.md`](truedata-thingsboard/DEVICE-PROFILE.md).
+  - [`truedata-nodered/`](truedata-nodered/README.md) — README.
 
 ## Project structure
 
