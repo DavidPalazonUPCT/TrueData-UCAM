@@ -1,0 +1,25 @@
+name: truedata
+
+# Compose raíz. Incluye los dos sub-composes de cada servicio.
+#
+# Comportamiento:
+#   - Desde la raíz:                    docker compose up -d
+#       → levanta TB + Postgres + NR
+#   - Desde truedata-thingsboard/:      docker compose up -d
+#       → levanta solo TB + Postgres
+#   - Desde truedata-nodered/:          docker compose up -d
+#       → levanta solo NR
+#
+# Project name fijo "truedata" en los tres composes para que volúmenes y
+# containers tengan el mismo prefijo desde cualquier cwd. Ver doc:
+#   https://docs.docker.com/compose/how-tos/multiple-compose-files/include/
+#   https://docs.docker.com/reference/compose-file/include/
+#
+# La red externa truedata_iot_network no se ve afectada por el project
+# name porque está declarada `external: true` con `name:` explícito.
+# Debe crearse previamente:
+#   docker network create truedata_iot_network
+
+include:
+  - truedata-thingsboard/docker-compose.yml
+  - truedata-nodered/docker-compose.yml

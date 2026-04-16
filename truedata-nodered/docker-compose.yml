@@ -1,3 +1,5 @@
+name: truedata
+
 services:
   # Servicio Node-RED
   nodered_tb:
