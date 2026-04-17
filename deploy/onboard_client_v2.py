@@ -186,6 +186,105 @@ def ensure_profiles(url: str, jwt: str) -> dict[str, str]:
     return result
 
 
+def tb_get_device_by_name(url: str, jwt: str, name: str) -> dict | None:
+    r = requests.get(
+        f"{url}/api/tenant/devices?deviceName={name}",
+        headers=_auth_headers(jwt),
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code == 200 and r.json():
+        return r.json()
+    if r.status_code == 404:
+        return None
+    if r.status_code != 200:
+        raise ExternalError(f"TB get device {name!r}: HTTP {r.status_code}: {r.text[:200]}")
+    return None
+
+
+def tb_create_device(url: str, jwt: str, name: str, profile_id: str, description: str) -> str:
+    body = {
+        "name": name,
+        "type": name.split("-")[0],  # arbitrary label for UI grouping
+        "deviceProfileId": {"entityType": "DEVICE_PROFILE", "id": profile_id},
+        "additionalInfo": {"description": description},
+    }
+    r = requests.post(
+        f"{url}/api/device",
+        headers=_auth_headers(jwt),
+        json=body,
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code >= 400:
+        raise ExternalError(f"TB create device {name!r}: HTTP {r.status_code}: {r.text[:200]}")
+    return r.json()["id"]["id"]
+
+
+def tb_get_credentials(url: str, jwt: str, device_id: str) -> str:
+    r = requests.get(
+        f"{url}/api/device/{device_id}/credentials",
+        headers=_auth_headers(jwt),
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise ExternalError(f"TB get credentials {device_id}: HTTP {r.status_code}: {r.text[:200]}")
+    token = r.json().get("credentialsId")
+    if not token:
+        raise ExternalError(f"TB get credentials {device_id}: no credentialsId in response")
+    return token
+
+
+def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
+    """POST credentials with new credentialsId — TB generates a fresh token."""
+    # Fetch current to get credentialsType/credentialsValue baseline if needed
+    r_get = requests.get(
+        f"{url}/api/device/{device_id}/credentials",
+        headers=_auth_headers(jwt),
+        timeout=HTTP_TIMEOUT,
+    )
+    if r_get.status_code != 200:
+        raise ExternalError(f"TB rotate credentials (read) {device_id}: HTTP {r_get.status_code}")
+    creds = r_get.json()
+    # Pop the old credentialsId so TB regenerates; keep id+version+deviceId
+    creds["credentialsId"] = None
+    r = requests.post(
+        f"{url}/api/device/credentials",
+        headers=_auth_headers(jwt),
+        json=creds,
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code >= 400:
+        raise ExternalError(f"TB rotate credentials {device_id}: HTTP {r.status_code}: {r.text[:200]}")
+    token = r.json().get("credentialsId")
+    if not token:
+        raise ExternalError(f"TB rotate credentials {device_id}: no new credentialsId in response")
+    return token
+
+
+def ensure_writeback_devices(url: str, jwt: str, client: str, profile_ids: dict, force: bool) -> dict:
+    """Idempotently ensure 2 writeback devices exist. Returns {role: {id, token, name}}."""
+    devices_spec = [
+        ("ml",       f"ml-inference-{client}",    "inference_results",    f"Writeback del servicio ML. Cliente: {client}."),
+        ("airtrace", f"airtrace-anchor-{client}", "blockchain_anchor",    f"Writeback del servicio airtrace. Cliente: {client}."),
+    ]
+    result = {}
+    for role, name, profile_name, description in devices_spec:
+        existing = tb_get_device_by_name(url, jwt, name)
+        if existing:
+            dev_id = existing["id"]["id"]
+            if force:
+                token = tb_rotate_credentials(url, jwt, dev_id)
+                print(f"[↻] device  {name:35s} rotated  token={token[:4]}...{token[-2:]}")
+            else:
+                token = tb_get_credentials(url, jwt, dev_id)
+                print(f"[=] device  {name:35s} existed  token={token[:4]}...{token[-2:]}")
+        else:
+            dev_id = tb_create_device(url, jwt, name, profile_ids[profile_name], description)
+            token = tb_get_credentials(url, jwt, dev_id)
+            print(f"[✓] device  {name:35s} created  token={token[:4]}...{token[-2:]}")
+        result[role] = {"id": dev_id, "token": token, "name": name}
+    return result
+
+
 def tb_login(url: str, user: str, password: str) -> str:
     """POST /api/auth/login → JWT. Raises ExternalError on failure."""
     try:
@@ -245,6 +344,12 @@ def main() -> int:
     # Phase 3: ensure profiles
     try:
         profile_ids = ensure_profiles(env["tb_url"], jwt)
+    except ExternalError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_EXTERNAL
+    # Phase 4: ensure writeback devices + capture tokens
+    try:
+        devices = ensure_writeback_devices(env["tb_url"], jwt, client, profile_ids, args.force)
     except ExternalError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_EXTERNAL
