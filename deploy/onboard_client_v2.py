@@ -4,6 +4,7 @@
 Spec: docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md
 """
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -83,6 +84,32 @@ def _validate(m: dict) -> None:
             raise ManifestError(f"manifest: ml_inference.url {ml_url!r}: must start with http:// or https://")
 
 
+# ============================================================================
+# Env vars (spec §6.3)
+# ============================================================================
+
+DEFAULT_TB_URL = "http://localhost:9090"
+DEFAULT_TB_USER = "tenant@thingsboard.org"
+DEFAULT_NR_URL = "http://localhost:1880"
+
+
+def read_env() -> dict:
+    """Read TB_* and NR_URL from environment.
+
+    Returns dict with tb_url, tb_user, tb_password, nr_url.
+    Raises RuntimeError if TB_ADMIN_PASSWORD is not set.
+    """
+    password = os.environ.get("TB_ADMIN_PASSWORD")
+    if not password:
+        raise RuntimeError("env: TB_ADMIN_PASSWORD is required (not set)")
+    return {
+        "tb_url": os.environ.get("TB_URL", DEFAULT_TB_URL).rstrip("/"),
+        "tb_user": os.environ.get("TB_ADMIN_USER", DEFAULT_TB_USER),
+        "tb_password": password,
+        "nr_url": os.environ.get("NR_URL", DEFAULT_NR_URL).rstrip("/"),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="onboard_client_v2.py",
@@ -97,7 +124,22 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    print(f"[stub] manifest={args.manifest} dry_run={args.dry_run} force={args.force}")
+    # Phase 1: load + validate manifest
+    try:
+        manifest = load_manifest(Path(args.manifest))
+    except (FileNotFoundError, ManifestError) as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    # Phase 2a: read env vars
+    try:
+        env = read_env()
+    except RuntimeError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_BAD_INPUT
+    client = manifest["client"]["id"]
+    tags = manifest["sensors"]["expected_tags"]
+    print(f"[✓] manifest: {args.manifest} (client={client}, {len(tags)} tags)")
+    print(f"[stub] env tb={env['tb_url']} nr={env['nr_url']}")
     return EXIT_OK
 
 
