@@ -6,8 +6,10 @@ Spec: docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md
 import argparse
 import os
 import re
+import stat
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -397,6 +399,75 @@ def smoke_tests(tb_url: str, jwt: str, devices: dict) -> None:
     print(f"[✓] smoke tests:     ML 200 OK (score persisted), airtrace 200 OK (tx_hash persisted)")
 
 
+# ============================================================================
+# Secrets (spec §8)
+# ============================================================================
+
+ENV_TEMPLATE = """\
+# onboard_client_v2.py — generated {timestamp}
+# DO NOT EDIT MANUALLY. Regenerate via deploy/onboard_client_v2.py.
+# Deliver this file to the {service_team} team via secure channel.
+CLIENT={client}
+TB_HOST={tb_host}
+TB_DEVICE_NAME={device_name}
+TB_DEVICE_TOKEN={token}
+"""
+
+
+def render_env(client: str, tb_host: str, device_name: str, token: str, service_team: str) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return ENV_TEMPLATE.format(
+        timestamp=now,
+        service_team=service_team,
+        client=client,
+        tb_host=tb_host,
+        device_name=device_name,
+        token=token,
+    )
+
+
+def ensure_dir_secure(path: Path, mode: int = 0o700) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(mode)
+
+
+def secure_write(path: Path, content: str, mode: int = 0o600) -> None:
+    # Open with mode 0o600 from the start to avoid a window where the file is world-readable
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, mode)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+    except Exception:
+        if os.path.exists(path):
+            os.unlink(path)
+        raise
+    os.chmod(path, mode)  # enforce even if file existed with laxer mode
+
+
+def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) -> list[Path]:
+    client_dir = secrets_root / client
+    ensure_dir_secure(client_dir, 0o700)
+    specs = [
+        ("ml",       "ml-inference.env",      "ML service"),
+        ("airtrace", "airtrace-anchor.env",   "airtrace service"),
+    ]
+    written = []
+    for role, filename, team in specs:
+        content = render_env(
+            client=client,
+            tb_host=tb_host,
+            device_name=devices[role]["name"],
+            token=devices[role]["token"],
+            service_team=team,
+        )
+        target = client_dir / filename
+        secure_write(target, content, 0o600)
+        written.append(target)
+        print(f"[✓] secrets written: {target} (0600)")
+    return written
+
+
 def tb_login(url: str, user: str, password: str) -> str:
     """POST /api/auth/login → JWT. Raises ExternalError on failure."""
     try:
@@ -480,6 +551,15 @@ def main() -> int:
     except SmokeError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_SMOKE_FAILED
+    # Phase 7: write secrets
+    secrets_root = Path("deploy/secrets")
+    try:
+        write_secrets(client, env["tb_url"], devices, secrets_root)
+    except OSError as e:
+        print(f"[✗] secrets: {e}", file=sys.stderr)
+        return EXIT_UNEXPECTED
+    print(f"\nonboarding complete. servicios ML y blockchain-api pueden arrancar "
+          f"(env_file apunta a deploy/secrets/{client}/).")
     return EXIT_OK
 
 
