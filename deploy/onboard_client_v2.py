@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import requests
 import yaml
 
 # ============================================================================
@@ -110,6 +111,37 @@ def read_env() -> dict:
     }
 
 
+# ============================================================================
+# TB REST helpers
+# ============================================================================
+
+HTTP_TIMEOUT = 10
+
+
+class ExternalError(RuntimeError):
+    """Raised when an external system (TB or NR) fails."""
+
+
+def tb_login(url: str, user: str, password: str) -> str:
+    """POST /api/auth/login → JWT. Raises ExternalError on failure."""
+    try:
+        r = requests.post(
+            f"{url}/api/auth/login",
+            json={"username": user, "password": password},
+            timeout=HTTP_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        raise ExternalError(f"TB login: unreachable ({e.__class__.__name__})")
+    if r.status_code == 401:
+        raise ExternalError(f"TB login: 401 Unauthorized (check TB_ADMIN_PASSWORD)")
+    if r.status_code != 200:
+        raise ExternalError(f"TB login: HTTP {r.status_code}: {r.text[:200]}")
+    token = r.json().get("token")
+    if not token:
+        raise ExternalError("TB login: 200 but no token in response")
+    return token
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="onboard_client_v2.py",
@@ -139,7 +171,13 @@ def main() -> int:
     client = manifest["client"]["id"]
     tags = manifest["sensors"]["expected_tags"]
     print(f"[✓] manifest: {args.manifest} (client={client}, {len(tags)} tags)")
-    print(f"[stub] env tb={env['tb_url']} nr={env['nr_url']}")
+    # Phase 2b: TB login
+    try:
+        jwt = tb_login(env["tb_url"], env["tb_user"], env["tb_password"])
+    except ExternalError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_EXTERNAL
+    print(f"[✓] TB login: {env['tb_url']} (user={env['tb_user']})")
     return EXIT_OK
 
 
