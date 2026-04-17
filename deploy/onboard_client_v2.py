@@ -517,6 +517,36 @@ def main() -> int:
     client = manifest["client"]["id"]
     tags = manifest["sensors"]["expected_tags"]
     print(f"[✓] manifest: {args.manifest} (client={client}, {len(tags)} tags)")
+    # --dry-run: validate + ping, no side effects
+    if args.dry_run:
+        print(f"[dry-run] manifest: {args.manifest} (valid)")
+        try:
+            jwt = tb_login(env["tb_url"], env["tb_user"], env["tb_password"])
+            print(f"[dry-run] TB login: {env['tb_url']} OK")
+        except ExternalError as e:
+            print(f"[dry-run] {e}", file=sys.stderr)
+            return EXIT_EXTERNAL
+        try:
+            r = requests.get(f"{env['nr_url']}/admin/get-expected-tags", timeout=HTTP_TIMEOUT)
+            r.raise_for_status()
+            print(f"[dry-run] NR ping:  {env['nr_url']} OK")
+        except requests.RequestException as e:
+            print(f"[dry-run] NR unreachable: {e.__class__.__name__}", file=sys.stderr)
+            return EXIT_EXTERNAL
+        existing = {p["name"] for p in tb_list_profiles(env["tb_url"], jwt)}
+        would_create_profiles = [p for p in REQUIRED_PROFILES if p not in existing]
+        would_create_devices = []
+        for name in [f"ml-inference-{client}", f"airtrace-anchor-{client}"]:
+            if not tb_get_device_by_name(env["tb_url"], jwt, name):
+                would_create_devices.append(name)
+        ml_url = (manifest.get("ml_inference") or {}).get("url")
+        ml_action = "set-ml-url" if ml_url else "clear-ml-url"
+        print(f"[dry-run] would create: {len(would_create_profiles)} profiles: {would_create_profiles}")
+        print(f"[dry-run] would create: {len(would_create_devices)} devices: {would_create_devices}")
+        print(f"[dry-run] would configure NR: set-expected-tags ({len(tags)}), {ml_action}")
+        print(f"[dry-run] would write: deploy/secrets/{client}/*.env")
+        print("\nno side effects performed. run without --dry-run to apply.")
+        return EXIT_OK
     # Phase 2b: TB login
     try:
         jwt = tb_login(env["tb_url"], env["tb_user"], env["tb_password"])
