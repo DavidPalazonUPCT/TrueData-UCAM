@@ -446,6 +446,14 @@ TB_DEVICE_NAME={device_name}
 TB_DEVICE_TOKEN={token}
 """
 
+GATEWAY_ENV_TEMPLATE = """\
+# onboard_client_v2.py — generated {timestamp}
+# DO NOT EDIT MANUALLY. Regenerate via deploy/onboard_client_v2.py.
+# Consumed by truedata-nodered/docker-compose.yml via env_file directive.
+# Node-RED substitutes ${{TB_GATEWAY_TOKEN}} in mqtt-broker.credentials.user at runtime.
+TB_GATEWAY_TOKEN={token}
+"""
+
 
 def render_env(client: str, tb_host: str, device_name: str, token: str, service_team: str) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -498,6 +506,15 @@ def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) 
         secure_write(target, content, 0o600)
         written.append(target)
         print(f"[✓] secrets written: {target} (0600)")
+    # Gateway env — consumed by NR docker-compose env_file
+    gw_content = GATEWAY_ENV_TEMPLATE.format(
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        token=devices["gateway"]["token"],
+    )
+    gw_target = client_dir / "nodered-gateway.env"
+    secure_write(gw_target, gw_content, 0o600)
+    written.append(gw_target)
+    print(f"[✓] secrets written: {gw_target} (0600)")
     return written
 
 
