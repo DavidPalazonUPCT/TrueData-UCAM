@@ -75,6 +75,8 @@ local, `localhost`. En despliegue real, el host acordado por entorno.
   normalización. Identifica al device en TB 1:1.
 - **Cardinalidad libre**: el payload puede contener N tags (no se valida
   el número).
+- **`value: null` o `undefined` ≡ tag ausente del bundle**. Un bundle `{ts, values: {X: null}}` devuelve `200 OK` pero X no entra al state LOCF (equivalente a que el bundle no contuviera X). Consistente con OPC-UA: un DataValue con StatusCode Bad suele llevar `value: null`.
+- **Cambio de tipo del valor entre bundles no validado**. El mismo `tag` puede enviar `float` en un bundle y `string` en otro; NR propaga ambos. Responsabilidad del consumidor ML hacer sanity-check de tipos.
 
 ---
 
@@ -108,8 +110,10 @@ Respuesta esperada:
 | Código | Cuerpo | Cuándo |
 |---|---|---|
 | `200 OK` | `{"status": "ok", "tags": <N>}` | Payload válido, parseado y publicado al broker MQTT de TB. `<N>` = número de tags recibidos |
-| `400 Bad Request` | `{"status": "error", "reason": "ts missing or not number"}` | `ts` ausente o no es `typeof "number"` |
-| `400 Bad Request` | `{"status": "error", "reason": "values missing or empty"}` | `values` ausente, no es objeto, o está vacío |
+| `400 Bad Request` | `{"status": "error", "reason": "body not valid JSON object"}` | Body ausente, no parseable como JSON, o de tipo distinto a objeto (array, primitivo) |
+| `400 Bad Request` | `{"status": "error", "reason": "ts missing or not finite number"}` | `ts` ausente, no es `typeof number`, o es `NaN`/`Infinity` |
+| `400 Bad Request` | `{"status": "error", "reason": "ts outside acceptable window (now-30d .. now+5min)"}` | `ts` fuera de la ventana aceptable (ver A6) |
+| `400 Bad Request` | `{"status": "error", "reason": "values must be non-empty object"}` | `values` ausente, no es objeto, es un array, o está vacío |
 
 > El `200` confirma parsing + dispatch al broker. **No** es ACK de
 > persistencia en la DB de TB. Un fallo posterior en el broker se
@@ -118,10 +122,12 @@ Respuesta esperada:
 
 ### Validaciones que rechazan el POST
 
-| Check | Resultado si falla |
-|---|---|
-| `typeof payload.ts === "number"` | `400 ts missing or not number` |
-| `typeof payload.values === "object"`, no `null`, con ≥1 key | `400 values missing or empty` |
+| Orden | Check | Fallo → reason |
+|---|---|---|
+| 1 | body JSON, typeof "object", no null, no array | `"body not valid JSON object"` |
+| 2 | `typeof ts === "number"` && `Number.isFinite(ts)` | `"ts missing or not finite number"` |
+| 3 | `ts ∈ [now-30d, now+5min]` | `"ts outside acceptable window (now-30d .. now+5min)"` |
+| 4 | `typeof values === "object"`, no null, no array, ≥1 key | `"values must be non-empty object"` |
 
 NR **no valida**: cardinalidad, tipo de cada valor, existencia previa
 de los tags como devices en TB, ni rango/plausibilidad de los valores.
@@ -195,17 +201,31 @@ Cuando se acuerde un mecanismo (token compartido, mTLS, header
 custom), se documentará como campo adicional del contrato sin romper
 compat con integraciones existentes.
 
+### A6 — `ts` en ventana [now-30d .. now+5min]
+
+NR rechaza (`400`) cualquier POST con `ts` fuera de esta ventana respecto al reloj del host de NR. El rango tolera:
+
+- Store-and-forward del servicio OPC hasta 30 días de backlog.
+- Clock skew moderado entre el PLC/servicio OPC y el host de NR (±5 min en el futuro).
+
+Valores fuera de rango (p.ej. `ts=0` por bug del cliente, `ts` de años atrás por replay de dumps antiguos) se rechazan para prevenir contaminación del histórico TB y queries confusas.
+
 ---
 
 ## Casos de error operacionales
 
 | Situación | Comportamiento esperado |
 |---|---|
-| `ts` como string ISO (`"2026-04-16T08:35:59Z"`) | Rechazo con `400 ts missing or not number`. El contrato exige Unix ms como `number` |
-| `values: []` (array) o `values: null` | Rechazo con `400 values missing or empty` |
+| `ts` como string ISO (`"2026-04-16T08:35:59Z"`) | Rechazo con `400 ts missing or not finite number`. El contrato exige Unix ms como `number` |
+| `values: []` (array) o `values: null` | Rechazo con `400 values must be non-empty object` |
 | Tag nuevo nunca antes visto | Aceptado. NR auto-provisiona el device en TB vía Gateway MQTT `connect` |
 | Servicio ML caído aguas abajo de NR | No afecta a este endpoint. El `200` no depende del servicio ML |
 | Node-RED caído | POST falla con error de red. Servicio OPC debe aplicar store-and-forward (ver A4) |
+| `ts` epoch (`0`) o negativo | Rechazo con `400 ts outside acceptable window`. Indica bug en el cliente, no se ingesta |
+| `ts` futuro > now+5min | Rechazo con `400 ts outside acceptable window`. Indica clock skew extremo o ts erróneo |
+| `ts` muy antiguo (> 30 días atrás) | Rechazo con `400 ts outside acceptable window`. Requiere replay con desplazamiento temporal si se desea reingestar |
+| Content-Type no JSON (p.ej. `text/plain`) | Rechazo con `400 body not valid JSON object` |
+| Body vacío | Rechazo con `400 body not valid JSON object` |
 
 ---
 
