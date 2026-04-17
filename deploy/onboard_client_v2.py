@@ -122,6 +122,70 @@ class ExternalError(RuntimeError):
     """Raised when an external system (TB or NR) fails."""
 
 
+REQUIRED_PROFILES = {
+    "sensor_planta":        "Device profile para sensores del PLC (v2). Ver ADR-003.",
+    "inference_input":      "Audit-trail del snapshot LOCF enviado al servicio ML. Ver ml-inference.md §A8.",
+    "inference_results":    "Writebacks del servicio ML. Ver ml-writeback.md.",
+    "blockchain_anchor":    "Writebacks de airtrace. Ver airtrace-writeback.md.",
+}
+
+
+def _auth_headers(jwt: str) -> dict:
+    return {"X-Authorization": f"Bearer {jwt}"}
+
+
+def tb_list_profiles(url: str, jwt: str) -> list[dict]:
+    r = requests.get(
+        f"{url}/api/deviceProfiles?pageSize=100&page=0",
+        headers=_auth_headers(jwt),
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise ExternalError(f"TB list profiles: HTTP {r.status_code}: {r.text[:200]}")
+    return r.json().get("data", [])
+
+
+def tb_create_profile(url: str, jwt: str, name: str, description: str) -> str:
+    """POST /api/deviceProfile with full body (TB CE 4.1 requires profileData)."""
+    body = {
+        "name": name,
+        "type": "DEFAULT",
+        "transportType": "DEFAULT",
+        "provisionType": "DISABLED",
+        "description": description,
+        "profileData": {
+            "configuration": {"type": "DEFAULT"},
+            "transportConfiguration": {"type": "DEFAULT"},
+            "provisionConfiguration": {"type": "DISABLED", "provisionDeviceSecret": None},
+            "alarms": None,
+        },
+    }
+    r = requests.post(
+        f"{url}/api/deviceProfile",
+        headers=_auth_headers(jwt),
+        json=body,
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code >= 400:
+        raise ExternalError(f"TB create profile {name!r}: HTTP {r.status_code}: {r.text[:200]}")
+    return r.json()["id"]["id"]
+
+
+def ensure_profiles(url: str, jwt: str) -> dict[str, str]:
+    """Idempotently ensure REQUIRED_PROFILES exist. Returns {name: id}."""
+    existing = {p["name"]: p["id"]["id"] for p in tb_list_profiles(url, jwt)}
+    result = {}
+    for name, description in REQUIRED_PROFILES.items():
+        if name in existing:
+            print(f"[=] profile {name:20s} existed  id={existing[name]}")
+            result[name] = existing[name]
+        else:
+            pid = tb_create_profile(url, jwt, name, description)
+            print(f"[✓] profile {name:20s} created  id={pid}")
+            result[name] = pid
+    return result
+
+
 def tb_login(url: str, user: str, password: str) -> str:
     """POST /api/auth/login → JWT. Raises ExternalError on failure."""
     try:
@@ -178,6 +242,12 @@ def main() -> int:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_EXTERNAL
     print(f"[✓] TB login: {env['tb_url']} (user={env['tb_user']})")
+    # Phase 3: ensure profiles
+    try:
+        profile_ids = ensure_profiles(env["tb_url"], jwt)
+    except ExternalError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_EXTERNAL
     return EXIT_OK
 
 

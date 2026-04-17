@@ -66,6 +66,7 @@ class MockMl:
 
 @pytest.fixture(scope="module")
 def mock_ml() -> MockMl:
+    """Mock ML HTTP server, one per pytest module. State reset between tests via clean_state."""
     mock = MockMl()
 
     class Handler(BaseHTTPRequestHandler):
@@ -129,7 +130,8 @@ class NrApi:
         r.raise_for_status()
 
     def clear_expected_tags(self) -> None:
-        requests.post(f"{self.base_url}/admin/clear-expected-tags", timeout=5)
+        r = requests.post(f"{self.base_url}/admin/clear-expected-tags", timeout=5)
+        r.raise_for_status()
 
     def set_ml_url(self, url: str) -> None:
         r = requests.post(
@@ -140,7 +142,8 @@ class NrApi:
         r.raise_for_status()
 
     def clear_ml_url(self) -> None:
-        requests.post(f"{self.base_url}/admin/clear-ml-url", timeout=5)
+        r = requests.post(f"{self.base_url}/admin/clear-ml-url", timeout=5)
+        r.raise_for_status()
 
 
 @pytest.fixture
