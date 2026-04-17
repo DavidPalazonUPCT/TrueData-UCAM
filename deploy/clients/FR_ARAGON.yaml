@@ -1,0 +1,40 @@
+# Cliente: FR_ARAGON — EDAR Francisco (Aragón)
+# Tags: 27 — fuente: NR /admin/get-expected-tags al momento de generación
+# Ver docs/architecture/PLAN-001.md §Fase 3
+client:
+  id: FR_ARAGON
+  name: "EDAR Francisco (Aragón)"
+  description: "Planta piloto v2"
+
+sensors:
+  expected_tags:
+    - ERROR_COMM
+    - Q_SALIDA_D1
+    - DI_02
+    - DI_10
+    - EA_4
+    - EA_3
+    - DI_05
+    - EA_2
+    - CE_RECHAZO
+    - DI_11
+    - DI_07
+    - DI_06
+    - DI_04
+    - Q_RECHAZO
+    - Heart_Bit
+    - DI_03
+    - CE_SALIDA_D2
+    - DI_01
+    - DI_09
+    - DI_12
+    - CE_SALIDA_D1
+    - Q_SALIDA_D2
+    - DI_13
+    - EA_1
+    - DI_08
+    - PH_D1
+    - DI_00
+
+ml_inference:
+  url: http://ml-classical:5000/api/inference

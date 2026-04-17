@@ -58,3 +58,4 @@ truedata-nodered/data/flows_cred.json
 
 # Deliverable docs
 docs/Entregable_*.md
+deploy/secrets/
