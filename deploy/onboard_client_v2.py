@@ -285,6 +285,55 @@ def ensure_writeback_devices(url: str, jwt: str, client: str, profile_ids: dict,
     return result
 
 
+# ============================================================================
+# NR admin helpers (spec §7 Fase 5)
+# ============================================================================
+
+
+def nr_set_expected_tags(url: str, tags: list[str]) -> None:
+    r = requests.post(
+        f"{url}/admin/set-expected-tags",
+        json={"tags": tags},
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise ExternalError(f"NR set-expected-tags: HTTP {r.status_code}: {r.text[:200]}")
+
+
+def nr_set_ml_url(url: str, ml_url: str) -> None:
+    r = requests.post(
+        f"{url}/admin/set-ml-url",
+        json={"url": ml_url},
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise ExternalError(f"NR set-ml-url: HTTP {r.status_code}: {r.text[:200]}")
+
+
+def nr_clear_ml_url(url: str) -> None:
+    r = requests.post(
+        f"{url}/admin/clear-ml-url",
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code != 200:
+        raise ExternalError(f"NR clear-ml-url: HTTP {r.status_code}: {r.text[:200]}")
+
+
+def configure_nodered(url: str, manifest: dict) -> None:
+    tags = manifest["sensors"]["expected_tags"]
+    try:
+        nr_set_expected_tags(url, tags)
+    except requests.RequestException as e:
+        raise ExternalError(f"NR unreachable: {e.__class__.__name__}")
+    ml_url = (manifest.get("ml_inference") or {}).get("url")
+    if ml_url:
+        nr_set_ml_url(url, ml_url)
+        print(f"[✓] NR configured:   EXPECTED_TAGS=[{len(tags)} tags], ML_INFERENCE_URL=<set>")
+    else:
+        nr_clear_ml_url(url)
+        print(f"[✓] NR configured:   EXPECTED_TAGS=[{len(tags)} tags], ML_INFERENCE_URL=<cleared>")
+
+
 def tb_login(url: str, user: str, password: str) -> str:
     """POST /api/auth/login → JWT. Raises ExternalError on failure."""
     try:
@@ -350,6 +399,12 @@ def main() -> int:
     # Phase 4: ensure writeback devices + capture tokens
     try:
         devices = ensure_writeback_devices(env["tb_url"], jwt, client, profile_ids, args.force)
+    except ExternalError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_EXTERNAL
+    # Phase 5: configure NR
+    try:
+        configure_nodered(env["nr_url"], manifest)
     except ExternalError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_EXTERNAL
