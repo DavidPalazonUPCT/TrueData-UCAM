@@ -237,8 +237,14 @@ def tb_get_credentials(url: str, jwt: str, device_id: str) -> str:
 
 
 def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
-    """POST credentials with new credentialsId — TB generates a fresh token."""
-    # Fetch current to get credentialsType/credentialsValue baseline if needed
+    """POST credentials with a freshly generated ACCESS_TOKEN.
+
+    TB CE 4.1 requires credentialsId to be specified (cannot be null). We
+    generate a 20-char alphanumeric token locally and submit it as the new
+    credentialsId.
+    """
+    import secrets as _secrets
+    import string as _string
     r_get = requests.get(
         f"{url}/api/device/{device_id}/credentials",
         headers=_auth_headers(jwt),
@@ -247,8 +253,9 @@ def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
     if r_get.status_code != 200:
         raise ExternalError(f"TB rotate credentials (read) {device_id}: HTTP {r_get.status_code}")
     creds = r_get.json()
-    # Pop the old credentialsId so TB regenerates; keep id+version+deviceId
-    creds["credentialsId"] = None
+    alphabet = _string.ascii_letters + _string.digits
+    new_token = "".join(_secrets.choice(alphabet) for _ in range(20))
+    creds["credentialsId"] = new_token
     r = requests.post(
         f"{url}/api/device/credentials",
         headers=_auth_headers(jwt),
