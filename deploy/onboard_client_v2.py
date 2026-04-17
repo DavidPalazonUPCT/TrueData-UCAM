@@ -126,6 +126,7 @@ class ExternalError(RuntimeError):
 
 
 REQUIRED_PROFILES = {
+    "Gateway":              "Device profile del Gateway MQTT (NR → TB). Ver ADR-003.",
     "sensor_planta":        "Device profile para sensores del PLC (v2). Ver ADR-003.",
     "inference_input":      "Audit-trail del snapshot LOCF enviado al servicio ML. Ver ml-inference.md §A8.",
     "inference_results":    "Writebacks del servicio ML. Ver ml-writeback.md.",
@@ -293,6 +294,31 @@ def ensure_writeback_devices(url: str, jwt: str, client: str, profile_ids: dict,
             print(f"[✓] device  {name:35s} created  token={token[:4]}...{token[-2:]}")
         result[role] = {"id": dev_id, "token": token, "name": name}
     return result
+
+
+def ensure_gateway_device(url: str, jwt: str, profile_ids: dict, force: bool) -> dict:
+    """Idempotently ensure the OPC-Gateway device exists. Returns {id, token, name}.
+
+    The Gateway is stack infrastructure (one per stack, single-tenant), not
+    client-specific. NR uses its access token to publish telemetry via the
+    Gateway MQTT API (v1/gateway/telemetry + v1/gateway/connect).
+    """
+    name = "OPC-Gateway"
+    description = "Gateway MQTT para publicación de telemetría desde Node-RED. Ver ADR-003."
+    existing = tb_get_device_by_name(url, jwt, name)
+    if existing:
+        dev_id = existing["id"]["id"]
+        if force:
+            token = tb_rotate_credentials(url, jwt, dev_id)
+            print(f"[↻] device  {name:35s} rotated  token={token[:4]}...{token[-2:]}")
+        else:
+            token = tb_get_credentials(url, jwt, dev_id)
+            print(f"[=] device  {name:35s} existed  token={token[:4]}...{token[-2:]}")
+    else:
+        dev_id = tb_create_device(url, jwt, name, profile_ids["Gateway"], description)
+        token = tb_get_credentials(url, jwt, dev_id)
+        print(f"[✓] device  {name:35s} created  token={token[:4]}...{token[-2:]}")
+    return {"id": dev_id, "token": token, "name": name}
 
 
 # ============================================================================
@@ -570,6 +596,12 @@ def main() -> int:
     # Phase 4: ensure writeback devices + capture tokens
     try:
         devices = ensure_writeback_devices(env["tb_url"], jwt, client, profile_ids, args.force)
+    except ExternalError as e:
+        print(f"[✗] {e}", file=sys.stderr)
+        return EXIT_EXTERNAL
+    # Phase 4b: ensure Gateway device (infra, single-tenant)
+    try:
+        devices["gateway"] = ensure_gateway_device(env["tb_url"], jwt, profile_ids, args.force)
     except ExternalError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_EXTERNAL
