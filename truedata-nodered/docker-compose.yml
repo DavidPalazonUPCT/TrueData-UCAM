@@ -16,6 +16,11 @@ services:
       # Solo en entorno de desarrollo. En producción, NO setear esta variable
       # — los endpoints /admin/{set,clear,get}-ml-url devuelven 404 sin leak.
       - NR_ADMIN_ENABLED=true
+    # TB_GATEWAY_TOKEN se inyecta vía env_file.
+    # El path depende de $CLIENT (single-tenant): el operador exporta CLIENT o lo
+    # pone en un `.env` en la raíz del repo. Ver deploy/README.md "Bring-up".
+    env_file:
+      - ../deploy/secrets/${CLIENT:?CLIENT must be set (export CLIENT=<id> or add to .env)}/nodered-gateway.env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
