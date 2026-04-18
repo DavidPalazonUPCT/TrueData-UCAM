@@ -67,12 +67,12 @@ relevante es que coincida con lo configurado en Node-RED.
 | Campo | Tipo | Descripción |
 |---|---|---|
 | `ts` | number (Unix ms) | `sourceTimestamp` del bundle OPC-UA que disparó esta inferencia. Idéntico al `ts` persistido en TB — sirve como clave natural para correlacionar inferencia con telemetría raw e inference-input snapshot |
-| `sensors` | object | Diccionario `{tag_name: value}` con **cardinalidad fija N** = `EXPECTED_TAGS` configurados en NR (p.ej. 27 para FR_ARAGON, 31 para ESAMUR). Construido por Node-RED vía **carry-forward** sobre el estado `lastSeen` |
+| `sensors` | object | Diccionario `{tag_name: value}` con **cardinalidad fija N** = `EXPECTED_TAGS` configurados en NR (27 para FR_ARAGON; futuros clientes pueden tener otro N). Construido por Node-RED vía **carry-forward** sobre el estado `lastSeen` |
 | `sensors.<tag>` | number \| boolean \| string | Valor del sensor. Puede ser el valor "fresco" del bundle actual, o un valor carry-forward del último bundle en el que ese tag apareció |
 
 ### Reglas semánticas
 
-- **Cadencia event-driven, no wall-clock**. Cada bundle OPC-UA entrante (post warm-up) dispara un POST al servicio ML. Cadencia típica **≥34 s** cuando el pipeline recibe full scans; puede ser sub-segundo cuando llegan CoV events (`Heart_Bit`, analógicos sin deadband). El servicio ML debe tolerar ritmos irregulares.
+- **Cadencia event-driven, no wall-clock**. Cada bundle OPC-UA entrante (post warm-up) dispara un POST al servicio ML. Cadencia típica **≥34 s** cuando el pipeline recibe full scans; puede ser sub-segundo cuando llegan **CoV events** (Change-of-Value — notificaciones OPC-UA aisladas para tags de alta frecuencia como el watchdog `Heart_Bit` o analógicos configurados sin deadband, es decir, sin umbral mínimo de cambio antes de notificar). El servicio ML debe tolerar ritmos irregulares.
 - **Cardinalidad fija `|sensors| = N`**. `N = |EXPECTED_TAGS|` por cliente. Nunca varía. Si el bundle entrante tiene menos tags, los que falten se rellenan con su valor más reciente conocido (LOCF). Si el bundle trae tags adicionales (nuevos sensores en campo), NR los persiste en TB raw pero **no los añade al payload ML** — requieren rebootstrap del modelo con nuevo `EXPECTED_TAGS`.
 - **Los nombres de tags son literales del PLC** (no normalizados).
 - **Warm-up gate**. Tras un restart de NR, el primer POST a ML se emite **solo cuando todos los N tags de `EXPECTED_TAGS` han aparecido al menos una vez en algún bundle**. Antes, NR no postea a ML (el raw path sí funciona). Ver §A7.
@@ -85,7 +85,7 @@ relevante es que coincida con lo configurado en Node-RED.
 
 ### Detección de sensor dropout (stale LOCF)
 
-NR no implementa timers de stale ni alarmas de sensor caído. Si un sensor dejara de emitir (avería persistente), el snapshot seguirá recibiendo su último valor conocido indefinidamente vía LOCF (ver FINDINGS-v2 §LIMIT-1).
+NR no implementa timers de stale ni alarmas de sensor caído. Si un sensor dejara de emitir (avería persistente), el snapshot seguirá recibiendo su último valor conocido indefinidamente vía LOCF — limitación consciente del diseño: NR aporta cardinalidad fija sin estado temporal de frescura.
 
 **Responsabilidad del servicio ML:** comparar el `ts` del snapshot entrante contra el `ts` del último punto de cada sensor individual en TB raw (`GET /api/plugins/telemetry/DEVICE/{sensor}/values/timeseries`). Si el gap es mayor que N ventanas operativas, emitir `status: "degraded"` en el writeback (ver `ml-writeback.md`).
 
@@ -174,6 +174,12 @@ ML está caído, TB sigue recibiendo telemetría normalmente y el servicio
 OPC recibe su `200` sin retraso. El único impacto de un fallo ML es la
 pérdida de inferencia en tiempo real para los scans afectados.
 
+**Caso adicional — URL de ML sin configurar:** si el operador no ha
+seteado `ML_INFERENCE_URL` en NR (o el manifest de onboarding lo dejó
+a `null`), NR omite silenciosamente la salida 2. TB sigue recibiendo
+telemetría raw; el servicio ML no recibe nada. El ACK al servicio OPC
+incluye `"inference": "disabled"` para que sea observable.
+
 ### A6 — LOCF (Last Observation Carry Forward) — cómo se construye `sensors`
 
 NR mantiene un estado en memoria `lastSeen = {tag → value}` que actualiza
@@ -188,9 +194,10 @@ Consecuencias para el servicio ML:
 - Siempre recibe `N` sensores. No necesita imputar ni tolerar cardinalidad
   variable en el input.
 - Un valor recibido puede ser **stale** (carry-forward de un bundle
-  anterior). Si el sensor se congela o falla, el valor stale se mantendrá
-  indefinidamente. Ver limitación LIMIT-1 en
-  [FINDINGS-v2-pipeline-reliability.md](../architecture/FINDINGS-v2-pipeline-reliability.md).
+  anterior). Si el sensor se congela o falla, el valor stale se
+  mantendrá indefinidamente — NR no tiene timers de frescura por tag.
+  La detección de staleness es responsabilidad del servicio ML (ver
+  más abajo).
 
 **Detección opcional de staleness** (responsabilidad del servicio ML, no
 del pipeline): comparar el `ts` del snapshot recibido con el `ts` del
@@ -313,8 +320,8 @@ Puntos a alinear antes de pasar a entorno compartido.
 
 La implementación actual es **LOCF ligero, event-driven**. El trade-off
 principal es que un sensor averiado propaga su último valor
-indefinidamente (LIMIT-1 en
-[FINDINGS-v2-pipeline-reliability.md](../architecture/FINDINGS-v2-pipeline-reliability.md)).
+indefinidamente — ver la nota en §Detección de sensor dropout (stale
+LOCF) sobre la responsabilidad compartida con el servicio ML.
 
 Evoluciones consideradas y descartadas para el scope actual:
 

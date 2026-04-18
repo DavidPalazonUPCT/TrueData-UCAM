@@ -55,7 +55,7 @@ Tres consumidores afectados:
 | `"ts missing or not number"` | `"body not valid JSON object"` / `"ts missing or not finite number"` / `"ts outside acceptable window (now-30d .. now+5min)"` |
 | `"values missing or empty"` | `"values must be non-empty object"` |
 
-### 2.4 — Pseudocódigo final (este JS será el code-fence del commit, por PLAN-001 §D.4.1.7)
+### 2.4 — Pseudocódigo final (este JS irá como code-fence completo en el mensaje del commit `fix(nodered):`, para que el commit sea auto-contenido frente a un diff de `flows.json` ilegible)
 
 ```javascript
 // PASO 1: VALIDATION
@@ -285,7 +285,7 @@ Son 7. Los 15 restantes son regresión (deben estar GREEN tanto antes como despu
 | 1 | `chore(tests): añadir harness de integración v2` | `tests/integration/conftest.py`, `tests/integration/README.md`, `requirements-dev.txt` | Infra lista |
 | 2 | `test(integration): suite de regresión v2 (Grupos A/B/C/E/F2-F6, 22 casos, RED antes del fix)` | `tests/integration/test_pipeline_v2.py` | **RED**: 7 críticos fallan, 15 pasan |
 | 3 | `feat(simulator): añadir flag --shift-to-now para replay de dumps históricos` | `simulator/opc_client_v2.py` | Dump FR_ARAGON replayeable |
-| 4 | `fix(nodered): corregir BUG-1/2/3 + LIMIT-2/4 en fn_main` | `truedata-nodered/data/flows.json` | **GREEN**: 22/22. Mensaje incluye JS final (PLAN-001 §D.4.1.7) |
+| 4 | `fix(nodered): corregir BUG-1/2/3 + LIMIT-2/4 en fn_main` | `truedata-nodered/data/flows.json` | **GREEN**: 22/22. Mensaje incluye el JS final completo como code-fence (diff de `flows.json` ilegible) |
 | 5 | `docs(contracts): alinear opc-ingest + ml-inference + ml-writeback con v2 post-fix` | 3 docs de `docs/contracts/` | Contratos alineados |
 | 6 | `docs(architecture): actualizar PLAN-001 §D.4 y cerrar FINDINGS-v2` | `PLAN-001.md`, `FINDINGS-v2-pipeline-reliability.md` | Docs internos alineados |
 | 7 | `docs(testing): añadir runbook F1 multi-rate burst` | `docs/testing/runbooks/v2-smoke-f1-multirate-burst.md` | Runbook disponible |

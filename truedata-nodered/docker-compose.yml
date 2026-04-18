@@ -6,16 +6,16 @@ services:
     restart: always
     image: nodered/node-red:3.1.9
     ports:
-      - "1880:1880"
+      - "${NR_PORT:-1880}:1880"
     volumes:
       - ./data:/data
       - ./settings.js:/data/settings.js:ro
     environment:
-      - TZ=Europe/Madrid
+      - TZ=${TZ:-Europe/Madrid}
       # Habilita los admin endpoints del flow (testing helpers de Fase 2.2).
       # Solo en entorno de desarrollo. En producción, NO setear esta variable
       # — los endpoints /admin/{set,clear,get}-ml-url devuelven 404 sin leak.
-      - NR_ADMIN_ENABLED=true
+      - NR_ADMIN_ENABLED=${NR_ADMIN_ENABLED:-true}
     # TB_GATEWAY_TOKEN se inyecta vía env_file.
     # El path depende de $CLIENT (single-tenant): el operador exporta CLIENT o lo
     # pone en un `.env` en la raíz del repo. Ver deploy/README.md "Bring-up".
@@ -26,8 +26,15 @@ services:
     networks:
       - iot_network
     user: "0:0"                               # Ejecuta el contenedor como root
+    healthcheck:
+      # nodered/node-red:3.x es Alpine; wget es de busybox (siempre presente).
+      # GET / devuelve 200 con adminAuth (login HTML) o sin él.
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:1880/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 networks:
   iot_network:
-    external: true                       # Esto le dice a Docker que la red ya existe
-    name: truedata_iot_network  # Usa el nombre de la red que ya existe
+    driver: bridge

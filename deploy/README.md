@@ -1,10 +1,11 @@
 # deploy/
 
-Provisioning scripts for TRUEDATA UCAM.
+Provisioning pipeline v2 de TRUEDATA UCAM. Single-tenant, idempotente,
+bring-up sin UI clicks.
 
-- `env_client.py` + `1_*.py` / `2_*.py` / `3_*.py` / `4_*.py` — v1 legacy orchestrator sin clientes activos. Preservado como referencia para el plan de contribución al monorepo gitlab.
-- `onboard_client_v2.py` — v2 pipeline (FR_ARAGON y nuevos clientes). Ver sección de abajo.
-- `clients/<CLIENT>.yaml` — manifests de cliente (v2).
+- `onboard_client_v2.py` — CLI monolítico. Ver §Testing Instructions.
+- `requirements.txt` — deps: `requests`, `pyyaml`, `cryptography`.
+- `clients/<CLIENT>.yaml` — manifests de cliente (uno por planta).
 - `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored).
   Tres ficheros por cliente: `ml-inference.env`, `airtrace-anchor.env`,
   `nodered-gateway.env`. Los dos primeros los consume el servicio externo

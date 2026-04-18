@@ -151,14 +151,15 @@ curl -s "${TB_URL}/api/plugins/telemetry/DEVICE/${DEVICE_ID}/values/timeseries?k
 
 > TB no devuelve confirmación de persistencia en la DB (la rule chain
 > es async). Un `200` confirma aceptación en el pipeline interno de TB,
-> no aterrizaje en `ts_kv`. Fallos posteriores se observan como
-> ausencia de datos, no como error en la respuesta.
+> no aterrizaje en el almacén de timeseries. Fallos posteriores se
+> observan como ausencia de datos, no como error en la respuesta.
 
 ---
 
 ## Device + profile pre-provisionados por UCAM
 
-La Fase 3 del [PLAN-001](../architecture/PLAN-001.md) crea, por cliente:
+El onboarding de UCAM (`deploy/onboard_client_v2.py`) crea
+idempotentemente por cliente:
 
 | Entidad | Nombre | Rol |
 |---|---|---|
@@ -191,10 +192,12 @@ body](ml-inference.md)). Esto permite:
 
 ### A2 — Un scan = un writeback
 
-La cadencia nominal del PLC es ~34 s (variable, ver [ADR-002
-§3.5.3](../architecture/ADR-002-aggregation-windows-and-sf-openquestions.md#353-cadencia-real-no-es-un-proceso-estacionario)).
-El servicio ML produce un resultado por scan y escribe uno por
-resultado. Cadencia esperada de writebacks: ~34 s.
+Cadencia típica **≥34 s** con full scans del PLC; puede ser sub-segundo
+cuando llegan CoV events (ver
+[ml-inference.md §Reglas semánticas](ml-inference.md) para el detalle
+del patrón bimodal). El servicio ML produce un resultado por scan
+recibido y escribe un writeback por resultado — cadencia observada de
+writebacks igual a la de recepción en `/api/inference`.
 
 Si el modelo soporta inferencia batch (varios scans en una sola
 operación), el servicio ML debe desempaquetar el batch en N writebacks
@@ -211,9 +214,8 @@ del servicio ML; TB es idempotente frente a reintentos con mismo `ts`.
 ### A4 — Cardinalidad variable no afecta al writeback
 
 La telemetría raw tiene cardinalidad variable por bundle OPC-UA
-(1..N tags, ver [ADR-002 §3.5.1](../architecture/ADR-002-aggregation-windows-and-sf-openquestions.md#351-el-opc-client-implementa-subscriptions-opc-ua-est-ndar)).
-El servicio ML decide si genera writeback para cualquier cardinalidad o
-solo para bundles completos. Es razonable:
+(1..N tags). El servicio ML decide si genera writeback para cualquier
+cardinalidad o solo para bundles completos. Es razonable:
 
 - **Opción estricta:** solo inferir cuando lleguen los N features que
   el modelo espera → no hay writeback para bundles parciales (p.ej.
@@ -232,7 +234,7 @@ Si el servicio ML está en el mismo compose que TB, usa DNS interno
 hacia el TB de la planta. UCAM no gestiona la conectividad de red del
 servicio ML.
 
-### A6 — Entrega del token out-of-band
+### A6 — Entrega y rotación del token out-of-band
 
 El access token del device `ml-inference-<cliente>` se entrega al
 equipo ML fuera de este contrato: email con PGP, secret manager del
@@ -240,8 +242,21 @@ cliente, fichero `.env` compartido por canal seguro, etc. El token
 **no** debe checkearse en ningún repo. El servicio ML lo almacena en
 su propia config (variable de entorno, secret manager).
 
-Si el token se compromete, UCAM lo revoca y regenera desde la API de
-TB sin cambiar el device ni el profile.
+**Política de rotación:**
+
+- UCAM regenera el token invocando `deploy/onboard_client_v2.py
+  --force` — la operación rota el token en TB atómicamente, invalida
+  el anterior y actualiza los ficheros `.env` locales.
+- **Aviso previo:** UCAM notifica al equipo ML por el mismo canal
+  out-of-band que se usa para entregar tokens, con mínimo **24 h de
+  antelación** salvo que la rotación sea por compromiso confirmado
+  (caso urgente: notificación inmediata + token nuevo ya generado).
+- **Sin grace period por diseño:** TB revoca el token viejo al
+  regenerar. No hay ventana de solapamiento. El equipo ML debe leer
+  el nuevo token del `.env` actualizado antes de reanudar writebacks.
+- Si el equipo ML detecta `401` en un writeback, debe alertar a UCAM
+  (probable rotación no anunciada o token corrupto) y detener
+  writebacks hasta recibir token nuevo.
 
 ### A7 — Fallo del servicio ML no degrada la telemetría raw
 
@@ -278,11 +293,10 @@ Puntos a alinear antes de pasar a entorno compartido.
    (imputando) o solo en bundles completos? Decisión del equipo ML;
    documentar en su runbook.
 
-3. **Cadencia máxima.** El límite de rate de TB CE por default está
-   desactivado (ADR-001 §5). Si el servicio ML quiere hacer writebacks
-   más frecuentes que 1 por scan (p.ej. re-inferencia tras nuevo
-   modelo), ¿qué cadencia máxima nos avisa? UCAM configurará rate
-   limits acorde.
+3. **Cadencia máxima.** TB CE tiene los rate limits desactivados por
+   default. Si el servicio ML quiere hacer writebacks más frecuentes
+   que 1 por scan (p.ej. re-inferencia tras nuevo modelo), ¿qué
+   cadencia máxima nos avisa? UCAM configurará rate limits acorde.
 
 4. **Observabilidad.** ¿El servicio ML expone métricas Prometheus
    (latencia, throughput, error rate)? Si sí, UCAM puede scrapearlas

@@ -39,10 +39,9 @@ deploy/
 Unchanged (v1 legacy coexiste):
 
 ```
-deploy/env_client.py               (v1 orquestador)
-deploy/1_*.py  2_*.py  3_*.py  4_*.py   (v1 scripts numerados)
-deploy/APIThingsboard.py            (v1 helpers — NO importado por v2)
-deploy/Client.json  ESAMUR/  Plantillas/   (v1 data)
+(pipeline v1 eliminado del repo el 2026-04-18 — env_client.py,
+1_*.py..4_*.py, APIThingsboard.py, Plantillas/, Client.json, ESAMUR/.
+Copia canónica en el monorepo gitlab tras MR-2.)
 ```
 
 Responsibility of `onboard_client_v2.py` (single file, organized by sections):
@@ -1451,48 +1450,21 @@ git commit -m "docs(deploy): add Testing Instructions section for onboard_client
 
 ---
 
-## Task 14 — Final audit + mark ad-hoc script obsolete
+## Task 14 — Final audit
 
-**Files:**
-- Modify: `docs/architecture/PLAN-001.md` (optional — add a note)
+**Files:** none (código ya committeado en tasks previas).
 
-- [ ] **Step 1: Verify the ad-hoc script is no longer needed**
+- [ ] **Step 1: Verify the v2 CLI cubre todo lo del ad-hoc `/tmp/fase3_exec.py`**
+
+El script ad-hoc vivía en `/tmp/` y puede haber desaparecido (reboot). Si sigue presente:
 
 ```bash
 diff <(python3 /tmp/fase3_exec.py 2>/dev/null || echo "no longer runnable OK") <(python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml)
 ```
 
-Expected: the v2 output is a superset of the ad-hoc's responsibilities (adds NR config + secrets file).
+Expected: la salida de v2 es superset de la del ad-hoc (añade NR config + secrets file + smoke tests). Si `/tmp/fase3_exec.py` ya no existe, omite este diff — el v2 es la única fuente de verdad desde ahora.
 
-- [ ] **Step 2: Optionally delete the ad-hoc script**
-
-`/tmp/fase3_exec.py` lives outside the repo; it will be wiped by any reboot. No action needed in git.
-
-If you want to mark it as superseded in the conversation / runbook:
-
-```bash
-mv /tmp/fase3_exec.py /tmp/fase3_exec.py.DEPRECATED_see_onboard_client_v2
-```
-
-- [ ] **Step 3: Optionally add a note in PLAN-001.md**
-
-Find in `docs/architecture/PLAN-001.md` the "Resultado Fase 3" section and add a sentence referencing the replacement:
-
-```markdown
-> **Update 2026-04-17:** el script ad-hoc `/tmp/fase3_exec.py` ha sido sustituido por
-> `deploy/onboard_client_v2.py`, que añade configuración de NR, smoke tests integrados
-> y entrega de tokens vía `deploy/secrets/<CLIENT>/*.env`. Ver spec:
-> [docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md](...).
-```
-
-- [ ] **Step 4: Final commit**
-
-```bash
-git add docs/architecture/PLAN-001.md
-git commit -m "docs(architecture): note that /tmp/fase3_exec.py is superseded by onboard_client_v2.py"
-```
-
-- [ ] **Step 5: Run the full procedural test suite from `deploy/README.md` §Testing Instructions**
+- [ ] **Step 2: Run the full procedural test suite from `deploy/README.md` §Testing Instructions**
 
 End-to-end verification that the MVP is demoable:
 

@@ -75,7 +75,7 @@ local, `localhost`. En despliegue real, el host acordado por entorno.
   normalización. Identifica al device en TB 1:1.
 - **Cardinalidad libre**: el payload puede contener N tags (no se valida
   el número).
-- **`value: null` o `undefined` ≡ tag ausente del bundle**. Un bundle `{ts, values: {X: null}}` devuelve `200 OK` pero X no entra al state LOCF (equivalente a que el bundle no contuviera X). Consistente con OPC-UA: un DataValue con StatusCode Bad suele llevar `value: null`.
+- **`value: null` o `undefined` ≡ tag ausente del bundle**. Un bundle `{ts, values: {X: null}}` devuelve `200 OK` pero X no entra al estado interno de Node-RED (el estado **LOCF** — Last Observation Carry Forward — que rellena los valores que faltan en futuros bundles con la última lectura válida por tag). Consistente con OPC-UA: un DataValue con StatusCode Bad suele llevar `value: null`.
 - **Cambio de tipo del valor entre bundles no validado**. El mismo `tag` puede enviar `float` en un bundle y `string` en otro; NR propaga ambos. Responsabilidad del consumidor ML hacer sanity-check de tipos.
 
 ---
@@ -129,8 +129,13 @@ Respuesta esperada:
 | 3 | `ts ∈ [now-30d, now+5min]` | `"ts outside acceptable window (now-30d .. now+5min)"` |
 | 4 | `typeof values === "object"`, no null, no array, ≥1 key | `"values must be non-empty object"` |
 
-NR **no valida**: cardinalidad, tipo de cada valor, existencia previa
-de los tags como devices en TB, ni rango/plausibilidad de los valores.
+NR **no valida**: cardinalidad (el objeto `values` puede tener 1 o
+centenares de tags), tipo de cada valor, existencia previa de los tags
+como devices en TB, ni rango/plausibilidad de los valores.
+
+> **JSON con keys duplicadas** (p.ej. `{"values": {"X": 1, "X": 2}}`)
+> es undefined behaviour en el estándar. NR queda con la última
+> (`X = 2`); el cliente OPC no debe producir payloads así.
 
 ---
 

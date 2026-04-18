@@ -21,7 +21,7 @@ Durante la ejecución de Fase 3 del PLAN-001 se provisionaron en TB los recursos
 - **Escupe tokens a stdout** — no hay fichero entregable.
 - **No está committeado** — vive en `/tmp/`, se pierde con reboot.
 
-Si hoy tuviéramos que onboardear un segundo cliente (EDAR_MURCIA, ESAMUR en v2, …), habría que reescribir el script de memoria, ejecutar curl a mano para NR y copiar tokens de stdout a un canal seguro. No hay single-source-of-truth ni reproducibilidad.
+Si hoy tuviéramos que onboardear un segundo cliente, habría que reescribir el script de memoria, ejecutar curl a mano para NR y copiar tokens de stdout a un canal seguro. No hay single-source-of-truth ni reproducibilidad.
 
 El doc operacional [client-provisioning.md](../../operations/client-provisioning.md) describe el flujo propuesto a alto nivel. Este spec lo concreta en nivel de diseño suficiente para generar un plan de implementación.
 
@@ -54,7 +54,7 @@ Del brainstorming (2026-04-17):
 - **N2. Offboarding de clientes.** Script `offboard_client.py` con retención histórica es trabajo posterior (§8 del doc operacional).
 - **N3. Integración con secret manager real** (Vault, 1Password API, AWS SM). File-based `.env` es suficiente para MVP; integración puede añadirse después leyendo de un backend pluggable.
 - **N4. Configurar servicios externos** (ML, airtrace). El onboarding solo toca core (TB+NR). Los servicios externos consumen artefactos.
-- **N5. Migrar clientes v1 a v2.** ESAMUR sigue con `env_client.py` hasta que se complete PLAN-001 Fase 4 para ese cliente.
+- **N5. Migrar clientes v1 a v2.** Out of scope: el único cliente v1 (otra empresa, no UCAM) ya no vive en este repo. El pipeline v1 queda físicamente como código-referencia para el port al gitlab, sin clientes activos.
 - **N6. Multi-tenant en un solo TB.** Plataforma es single-tenant por diseño.
 - **N7. Suite pytest automatizada.** Testing procedural manual suficiente para MVP. pytest/CI son trabajo futuro si/cuando el deploy lo requiera.
 - **N8. Proyección al monorepo TRUEDATA GitLab.** El script es lo bastante simple para portarse mecánicamente más tarde si hay contribución — no optimizamos el diseño para ese escenario ahora.
@@ -92,10 +92,9 @@ deploy/
 │       ├── ml-inference.env           (mode 0600)
 │       └── airtrace-anchor.env        (mode 0600)
 │
-├── env_client.py                      [UNCHANGED]  ← v1 legacy, sirve ESAMUR v1
-├── 1_*.py  2_*.py  3_*.py  4_*.py     [UNCHANGED]
-├── APIThingsboard.py                  [UNCHANGED]  ← NO importado por v2
-├── Client.json  ESAMUR/  Plantillas/  [UNCHANGED]
+(el pipeline v1 — env_client.py, 1_*.py..4_*.py, APIThingsboard.py,
+Plantillas/ — fue eliminado del repo el 2026-04-18 tras portar al
+monorepo gitlab; ya no coexiste con v2)
 ```
 
 Cambios globales:
@@ -484,7 +483,7 @@ Todo esto es trabajo futuro si/cuando el MVP madure hacia producto.
 
 3. **Naming `v2` en el nombre del fichero.** Mantener durante la coexistencia con `env_client.py` legacy. Renombrar a `onboard_client.py` cuando el v1 se deprecie — tarea separada, no ahora.
 
-4. **Manifest de otros clientes (ESAMUR, EDAR_MURCIA) para v2.** Cuando se migren, un `deploy/clients/<X>.yaml` adicional. No forma parte del MVP.
+4. **Manifest de otros clientes para v2.** Cuando aparezcan, un `deploy/clients/<X>.yaml` adicional. No forma parte del MVP.
 
 ---
 

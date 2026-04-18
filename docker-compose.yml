@@ -15,10 +15,10 @@ name: truedata
 #   https://docs.docker.com/compose/how-tos/multiple-compose-files/include/
 #   https://docs.docker.com/reference/compose-file/include/
 #
-# La red externa truedata_iot_network no se ve afectada por el project
-# name porque está declarada `external: true` con `name:` explícito.
-# Debe crearse previamente:
-#   docker network create truedata_iot_network
+# La red `iot_network` (driver: bridge) se declara idéntica en ambos
+# sub-composes y Docker Compose la materializa una sola vez como
+# `truedata_iot_network` (project name + network name). Se crea
+# automáticamente al hacer `up` — no hace falta `docker network create`.
 
 include:
   - truedata-thingsboard/docker-compose.yml

@@ -6,24 +6,33 @@ services:
     restart: always
     image: thingsboard/tb-postgres:4.1.0
     ports:
-      - "9090:9090"                           # Acceso a ThingsBoard en el puerto 9090
-      - "1883:1883"
-      - "7070:7070"
+      - "${TB_PORT:-9090}:9090"
+      - "${TB_MQTT_PORT:-1883}:1883"
+      - "${TB_HTTP_PORT:-7070}:7070"
       - "5683-5688:5683-5688/udp"
     environment:
       DATABASE_HOST: db
       DATABASE_PORT: 5432
       DATABASE_TYPE: postgresql
-      DATABASE_NAME: thingsboard
-      DATABASE_USER: thingsboard
-      DATABASE_PASSWORD: thingsboard_password
+      DATABASE_NAME: ${POSTGRES_DB:-thingsboard}
+      DATABASE_USER: ${POSTGRES_USER:-thingsboard}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-thingsboard_password}
     volumes:
       - tb-data:/data
       - tb-logs:/var/log/thingsboard
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - iot_network
+    healthcheck:
+      # /login es público (siempre 200) en TB CE 4.x. start_period largo porque
+      # la primera inicialización del esquema Postgres tarda 3-5 min.
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/login >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
 
   # Servicio de ThingsBoard db
   db:
@@ -31,20 +40,24 @@ services:
     container_name: postgres-db
     restart: always
     environment:
-      POSTGRES_USER: thingsboard
-      POSTGRES_PASSWORD: thingsboard_password
-      POSTGRES_DB: thingsboard
+      POSTGRES_USER: ${POSTGRES_USER:-thingsboard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-thingsboard_password}
+      POSTGRES_DB: ${POSTGRES_DB:-thingsboard}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - iot_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-thingsboard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 networks:
   iot_network:
-    external: true                       # Esto le dice a Docker que la red ya existe
-    name: truedata_iot_network  # Usa el nombre de la red que ya existe
+    driver: bridge
 
 volumes:
   tb-data:

@@ -6,7 +6,7 @@
 
 **Architecture:**
 1. Escribir suite pytest que valide los 22 comportamientos (7 críticos fallan en RED, 15 regresión pasan).
-2. Aplicar los 4 fixes en `fn_main` (un solo commit con JS final en el mensaje, por PLAN-001 §D.4.1.7) → 22/22 GREEN.
+2. Aplicar los 4 fixes en `fn_main` (un solo commit con el JS final completo como code-fence en el mensaje, para que el commit sea auto-contenido) → 22/22 GREEN.
 3. Alinear contratos y runbook F1.
 
 **Tech Stack:** Node-RED 3.1.9 + ThingsBoard CE 4.1.0 (Docker), Python 3.11+ (pytest, requests), JavaScript (function node inline).
@@ -963,7 +963,7 @@ EOF
 
 ## Task 8: Aplicar el fix consolidado en `fn_main`
 
-**Objetivo:** Un único commit al function node principal con los 4 fixes (BUG-1/2/3 + LIMIT-2/4). El commit message incluye el JS final completo (convención PLAN-001 §D.4.1.7).
+**Objetivo:** Un único commit al function node principal con los 4 fixes (BUG-1/2/3 + LIMIT-2/4). El commit message incluye el JS final completo como code-fence, para que el commit sea auto-contenido y el diff de `flows.json` (ilegible) no sea la única fuente del cambio.
 
 **Files:**
 - Modify: `truedata-nodered/data/flows.json` — nodo `fn_main`
@@ -1188,7 +1188,7 @@ autouse fixture de la suite pytest).
 
 Suite pytest pasa 22/22 contra este fix (ver tests/integration/).
 
-Por convención PLAN-001 §D.4.1.7 el código JS final del function node:
+El commit incluye el código JS final completo del function node como code-fence (el diff de `flows.json` no es legible):
 
 ```javascript
 // PASO 1: VALIDATION
@@ -1448,124 +1448,6 @@ EOF
 
 ---
 
-## Task 10: Actualizar docs internos (PLAN-001 + FINDINGS-v2)
-
-**Files:**
-- Modify: `docs/architecture/PLAN-001.md` — §D.4 pseudocódigo
-- Modify: `docs/architecture/FINDINGS-v2-pipeline-reliability.md` — §9 Historial
-
-- [ ] **Step 1: Actualizar `PLAN-001.md` §D.4**
-
-Localizar la sección `### D.4 — Flujo del function node (pseudo-código)` (≈línea 1826). Reemplazar el bloque de pseudo-código entre triple-backtick por:
-
-```
-input:  msg.payload (HTTP body del OPC Client)
-output 1 → mqtt-out (connects + telemetry hacia TB Gateway MQTT)
-output 2 → http-request (body hacia ML inference)
-output 3 → http-response (error 400 | ACK 200)
-
-// ============================================================
-// PASO 1: VALIDACIÓN (orden estricto)
-// ============================================================
-if !msg.payload or typeof msg.payload !== "object" or Array.isArray(msg.payload):
-    return [null, null, { statusCode: 400, payload: { reason: "body not valid JSON object" } }]
-
-const ts = msg.payload.ts
-if typeof ts !== "number" or !Number.isFinite(ts):
-    return [null, null, { statusCode: 400, payload: { reason: "ts missing or not finite number" } }]
-
-const now = Date.now()
-if ts < now - 30*24*3600*1000 or ts > now + 5*60*1000:
-    return [null, null, { statusCode: 400, payload: { reason: "ts outside acceptable window (now-30d .. now+5min)" } }]
-
-const values = msg.payload.values
-if typeof values !== "object" or values === null or Array.isArray(values) or Object.keys(values).length === 0:
-    return [null, null, { statusCode: 400, payload: { reason: "values must be non-empty object" } }]
-
-// ============================================================
-// PASO 1bis: LOCF update — shape {tag: {value, ts}}
-// ============================================================
-const lastSeen = flow.get("lastSeen") || {}
-for each (tag, value) in values:
-    if value === null or value === undefined: continue  // LIMIT-2
-    const prev = lastSeen[tag]
-    if !prev or ts >= prev.ts:                          // BUG-3
-        lastSeen[tag] = { value: value, ts: ts }
-flow.set("lastSeen", lastSeen)
-
-// ============================================================
-// PASO 2a: CONNECT MESSAGES — sin cambios respecto a versión anterior
-// ============================================================
-// (ver código JS del commit fix(nodered): corregir BUG-1/2/3 + LIMIT-2/4)
-
-// ============================================================
-// PASO 2b: RAW TELEMETRY — sin cambios
-// ============================================================
-
-// ============================================================
-// PASO 3: SNAPSHOT + ML dispatch (extrae .value del nuevo shape)
-// ============================================================
-if expectedTags configurado:
-    missing = expectedTags.filter(t => !(t in lastSeen))
-    if missing.length === 0:
-        snapshot = {}
-        for each t in expectedTags:
-            snapshot[t] = lastSeen[t].value     // nuevo: .value
-        construir inferenceMsgs (connect + telemetry) hacia inference-input
-        si mlUrl: construir mlMsg con payload {ts, sensors: snapshot}
-    else:
-        warmup = {missing: N, total: M}
-
-return [[...connectMsgs, mqttMsg, ...inferenceMsgs], mlMsg, ack]
-```
-
-En **§D.4.1 — Notas operacionales**, añadir un nuevo apartado al final:
-
-```markdown
-8. **Ventana de validación de `ts` (LIMIT-4)**. El rango aceptable es
-   `[now-30d, now+5min]` respecto al reloj del host de NR. La cota
-   inferior tolera store-and-forward de hasta 30 días; la superior
-   absorbe clock skew moderado. `ts` fuera de rango se rechaza con
-   `400 ts outside acceptable window`. Para replayear dumps antiguos
-   hay que desplazarlos temporalmente antes (ver
-   `simulator/opc_client_v2.py --shift-to-now`).
-
-9. **Compat del state `lastSeen` tras redeploy**. Si queda un
-   `lastSeen` en flow context con la forma vieja (`{tag: value}`), el
-   siguiente bundle que incluya ese tag sobreescribe la entrada con
-   la forma nueva (`{tag: {value, ts}}`). Para tags que no vuelvan a
-   llegar, `lastSeen[t].value` sería `undefined` (forma vieja) y el
-   snapshot contendría `undefined`. Mitigación: tras un redeploy que
-   toque el function node, ejecutar
-   `POST /admin/clear-expected-tags` (limpia EXPECTED_TAGS + lastSeen).
-   La suite pytest lo hace via el autouse fixture `clean_state`.
-```
-
-- [ ] **Step 2: Actualizar `FINDINGS-v2-pipeline-reliability.md` §9 Historial**
-
-Localizar `## 9. Historial` (final del documento). Añadir una nueva fila a la tabla:
-
-```markdown
-| 2026-04-17 | David Palazon / Claude | Cierre de la matriz: BUG-1/2/3 y LIMIT-2/4 corregidos en `fn_main` (ver commit `fix(nodered): corregir BUG-1/2/3 + LIMIT-2/4`). Suite pytest de 22 tests en `tests/integration/test_pipeline_v2.py` valida el resultado. LIMIT-1/3/5 consolidados como asunciones en `docs/contracts/ml-inference.md` y `opc-ingest.md` sin cambios de código |
-```
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs/architecture/PLAN-001.md docs/architecture/FINDINGS-v2-pipeline-reliability.md
-git commit -m "$(cat <<'EOF'
-docs(architecture): actualizar PLAN-001 §D.4 y cerrar FINDINGS-v2
-
-- PLAN-001 §D.4: pseudocódigo con nuevo orden de validación (body → ts → window → values)
-  y nueva forma de lastSeen = {tag: {value, ts}}. §D.4.1 nuevas notas 8/9
-  sobre ventana de ts y compat del state en redeploy.
-- FINDINGS-v2 §9: entrada fechada cerrando la matriz de bugs corregidos.
-EOF
-)"
-```
-
----
-
 ## Task 11: Runbook F1 (multi-rate burst, manual)
 
 **Files:**
@@ -1713,11 +1595,10 @@ Expected: **26 case runs PASS, 0 FAIL** (22 tests lógicos, con F5 parametrizado
 git log --oneline -10
 ```
 
-Expected: los 7 commits del plan en orden:
+Expected: los 6 commits del plan en orden:
 
 ```
 <hash> docs(testing): añadir runbook F1 multi-rate burst
-<hash> docs(architecture): actualizar PLAN-001 §D.4 y cerrar FINDINGS-v2
 <hash> docs(contracts): alinear opc-ingest + ml-inference + ml-writeback con v2 post-fix
 <hash> fix(nodered): corregir BUG-1/2/3 + LIMIT-2/4 en fn_main
 <hash> feat(simulator): añadir flag --shift-to-now para replay de dumps históricos
@@ -1752,7 +1633,5 @@ Seguir el runbook en `docs/testing/runbooks/v2-smoke-f1-multirate-burst.md`. Doc
 ## Referencias
 
 - Spec de esta sesión: `docs/superpowers/specs/2026-04-17-v2-pipeline-reliability-fixes-design.md`
-- Findings origen: `docs/architecture/FINDINGS-v2-pipeline-reliability.md`
-- Arquitectura: `docs/architecture/PLAN-001.md` §D.4
 - ADR-003 (pipeline v2 NR + Gateway MQTT)
 - Contratos: `docs/contracts/opc-ingest.md`, `ml-inference.md`, `ml-writeback.md`

@@ -9,8 +9,7 @@ compartiendo sourceTimestamp), y POSTea cada bundle a
 `/api/opc-ingest` de Node-RED.
 
 Ver:
-- docs/architecture/ADR-003.md (§2.3.2) — mapeo bundle → POST
-- docs/architecture/ADR-002-...md (§3.5) — patrón bimodal observado
+- docs/architecture/ADR-003.md — decisión v2 (NR + Gateway MQTT)
 - docs/contracts/opc-ingest.md — contrato del endpoint
 
 Uso básico:
@@ -18,8 +17,8 @@ Uso básico:
         --url http://localhost:1880/api/opc-ingest \\
         --limit 10 --rate burst
 
-Mantiene el legacy `simulador_sensores.py` (v1, REST token-per-device)
-intacto; este es el inyector para v2 (HTTP bulk → NR → MQTT Gateway).
+Único inyector del repo (el simulador v1 fue eliminado al migrar a v2).
+Flujo: POST HTTP bulk → Node-RED → Gateway MQTT → ThingsBoard.
 """
 
 from __future__ import annotations

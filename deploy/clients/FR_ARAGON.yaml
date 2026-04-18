@@ -3,8 +3,8 @@
 # Ver docs/architecture/PLAN-001.md §Fase 3
 client:
   id: FR_ARAGON
-  name: "EDAR Francisco (Aragón)"
-  description: "Planta piloto v2"
+  name: "Francisco Aragón"
+  description: "Planta piloto"
 
 sensors:
   expected_tags:
@@ -37,4 +37,4 @@ sensors:
     - DI_00
 
 ml_inference:
-  url: http://ml-classical:5000/api/inference
+  url: http://ai-advanced:5000/api/inference

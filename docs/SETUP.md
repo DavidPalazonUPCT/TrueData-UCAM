@@ -1,11 +1,13 @@
 # Setup end-to-end — Node-RED + ThingsBoard
 
 Checklist para levantar el pipeline v2 desde un repo recién clonado
-hasta el primer POST `/api/opc-ingest` validado.
+hasta el primer `POST /api/opc-ingest` validado. El bring-up es
+automatizado: no se tocan UIs ni se copian tokens a mano.
 
 **Pre-requisitos del host:**
 
 - Docker Engine + Docker Compose v2.20+
+- Python 3.9+ con `pip install -r deploy/requirements.txt`
 - `curl`, `jq` (opcional pero recomendado)
 
 ---
@@ -20,18 +22,15 @@ docker network create truedata_iot_network
 
 ---
 
-## 2. Levantar los servicios
-
-Desde la raíz del repo (levanta TB + Postgres + NR):
+## 2. Levantar ThingsBoard + Postgres
 
 ```sh
-docker compose up -d
+docker compose up -d thingsboard
 ```
 
-O levantar cada servicio por separado desde su directorio.
-
-El primer arranque de ThingsBoard tarda ~90 s mientras la DB ejecuta
-migraciones de schema.
+El primer arranque tarda ~90 s mientras la DB ejecuta migraciones.
+Node-RED **todavía no** — hay que onboardear primero para que exista
+el token del Gateway device que NR consume vía `env_file`.
 
 ---
 
@@ -47,51 +46,53 @@ done
 
 ---
 
-## 4. Crear el Gateway device en TB y guardar su access token
+## 4. Onboarding del cliente
+
+`onboard_client_v2.py` provisiona idempotentemente en TB los 4 device
+profiles (`sensor_planta`, `inference_input`, `inference_results`,
+`blockchain_anchor`), el device tipo Gateway (`OPC-Gateway`), y los 2
+devices de writeback (`ml-inference-<CLIENT>`,
+`airtrace-anchor-<CLIENT>`). Escribe los tokens a
+`deploy/secrets/<CLIENT>/*.env` (mode 0600) y regenera
+`truedata-nodered/data/flows_cred.json` con el literal
+`${TB_GATEWAY_TOKEN}` cifrado (AES-256-CTR, `credentialSecret` de
+`settings.js`).
 
 ```sh
-JWT=$(curl -s -X POST http://localhost:9090/api/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"username":"tenant@thingsboard.org","password":"tenant"}' \
-    | jq -r .token)
-
-GATEWAY_ID=$(curl -s -X POST http://localhost:9090/api/device \
-    -H "Content-Type: application/json" \
-    -H "X-Authorization: Bearer $JWT" \
-    -d '{"name":"OPC-Gateway","type":"Gateway","additionalInfo":{"gateway":true}}' \
-    | jq -r .id.id)
-
-GATEWAY_TOKEN=$(curl -s "http://localhost:9090/api/device/$GATEWAY_ID/credentials" \
-    -H "X-Authorization: Bearer $JWT" | jq -r .credentialsId)
-
-echo "Gateway token: $GATEWAY_TOKEN"
+export TB_ADMIN_PASSWORD=tenant   # default TB CE en dev
+python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
 ```
 
----
+Esperado: exit 0, stdout termina con `onboarding complete`. Verifica
+los artefactos:
 
-## 5. Configurar el token en Node-RED
+```sh
+ls -la deploy/secrets/FR_ARAGON/
+# 3 ficheros mode -rw------- (ml-inference.env, airtrace-anchor.env,
+# nodered-gateway.env)
+```
 
-El `flows.json` se carga automáticamente desde el bind mount, pero
-`flows_cred.json` está cifrado con un `credentialSecret` por instancia
-y **no se commitea**. Hay que setear el token a mano:
-
-1. Login en `http://localhost:1880` (usuario `tenant`, password en
-   `settings.js`).
-2. Editar el config node `TB Gateway` → tab Security →
-   `user = $GATEWAY_TOKEN` → Update → Deploy.
+Para rotar tokens en demanda: añadir `--force`.
 
 ---
 
-## 6. Crear el device profile `sensor_planta`
+## 5. Levantar Node-RED
 
-Ver [`../truedata-thingsboard/DEVICE-PROFILE.md`](../truedata-thingsboard/DEVICE-PROFILE.md)
-para el procedimiento. El profile debe existir antes del primer scan
-para que los devices auto-provisionados hereden la rule chain
-correcta.
+NR consume `deploy/secrets/${CLIENT}/nodered-gateway.env` vía
+`env_file:` del compose. `${CLIENT}` tiene que estar seteado en el
+entorno del operador (o en un `.env` en la raíz del repo):
+
+```sh
+export CLIENT=FR_ARAGON
+cd truedata-nodered && docker compose up -d && cd ..
+```
+
+NR arranca con el token del Gateway ya inyectado como env var y el
+flow cargado desde `data/flows.json`. Cero clicks en la UI.
 
 ---
 
-## 7. Validación end-to-end
+## 6. Validación end-to-end
 
 ```sh
 curl -s -X POST http://localhost:1880/api/opc-ingest \
@@ -100,10 +101,14 @@ curl -s -X POST http://localhost:1880/api/opc-ingest \
 # Esperado: {"status":"ok","tags":1}
 ```
 
-Verificar que el device `POT_CCM` aparece en TB con profile
-`sensor_planta`:
+Verifica que el device `POT_CCM` aparece en TB con el profile
+correcto:
 
 ```sh
+JWT=$(curl -s -X POST http://localhost:9090/api/auth/login \
+    -H "Content-Type: application/json" \
+    -d '{"username":"tenant@thingsboard.org","password":"tenant"}' \
+    | jq -r .token)
 curl -s "http://localhost:9090/api/tenant/devices?deviceName=POT_CCM" \
     -H "X-Authorization: Bearer $JWT" | jq '{name, type}'
 # Esperado: {"name": "POT_CCM", "type": "sensor_planta"}
@@ -111,12 +116,12 @@ curl -s "http://localhost:9090/api/tenant/devices?deviceName=POT_CCM" \
 
 ---
 
-## 8. (Opcional) Habilitar la salida ML inference
+## 7. (Opcional) Apuntar la salida ML a un servicio real
 
-Por defecto la salida 2 (ML) está silenciada (`flow.ML_INFERENCE_URL`
-no set). Para activarla en desarrollo (requiere
-`NR_ADMIN_ENABLED=true` en el entorno de NR, ya seteado en
-`truedata-nodered/docker-compose.yml`):
+Por defecto la salida 2 (ML) queda silenciada si
+`manifest.ml_inference.url` era `null` al onboardear. Para activarla
+en runtime sin re-onboardear (requiere `NR_ADMIN_ENABLED=true`, ya
+seteado en `truedata-nodered/docker-compose.yml` para entornos dev):
 
 ```sh
 curl -s -X POST http://localhost:1880/admin/set-ml-url \
@@ -124,5 +129,5 @@ curl -s -X POST http://localhost:1880/admin/set-ml-url \
     -d '{"url":"http://<ml-host>:<port>/api/inference"}'
 ```
 
-En producción, `NR_ADMIN_ENABLED` NO debe estar seteado. Los endpoints
-`/admin/*` devuelven `404` byte-identical a un path inexistente.
+En producción `NR_ADMIN_ENABLED` no debe setearse — los `/admin/*`
+responden `404` byte-identical a un path inexistente.
