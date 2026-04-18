@@ -95,13 +95,15 @@ def _validate(m: dict) -> None:
 DEFAULT_TB_URL = "http://localhost:9090"
 DEFAULT_TB_USER = "tenant@thingsboard.org"
 DEFAULT_NR_URL = "http://localhost:1880"
+DEFAULT_NR_DATA_DIR = "truedata-nodered/data"
+DEFAULT_NR_CREDENTIAL_SECRET = "airtrace"  # see truedata-nodered/settings.js
 
 
 def read_env() -> dict:
-    """Read TB_* and NR_URL from environment.
+    """Read TB_* and NR_* from environment.
 
-    Returns dict with tb_url, tb_user, tb_password, nr_url.
-    Raises RuntimeError if TB_ADMIN_PASSWORD is not set.
+    Returns dict with tb_url, tb_user, tb_password, nr_url, nr_data_dir,
+    nr_credential_secret. Raises RuntimeError if TB_ADMIN_PASSWORD is not set.
     """
     password = os.environ.get("TB_ADMIN_PASSWORD")
     if not password:
@@ -111,6 +113,8 @@ def read_env() -> dict:
         "tb_user": os.environ.get("TB_ADMIN_USER", DEFAULT_TB_USER),
         "tb_password": password,
         "nr_url": os.environ.get("NR_URL", DEFAULT_NR_URL).rstrip("/"),
+        "nr_data_dir": os.environ.get("NR_DATA_DIR", DEFAULT_NR_DATA_DIR),
+        "nr_credential_secret": os.environ.get("NR_CREDENTIAL_SECRET", DEFAULT_NR_CREDENTIAL_SECRET),
     }
 
 
@@ -518,6 +522,46 @@ def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) 
     return written
 
 
+# ============================================================================
+# NR credentials store (flows_cred.json)
+# ============================================================================
+#
+# Replicates Node-RED's AES-256-CTR encryption for flows_cred.json. Algorithm
+# (from @node-red/util/lib/util.js): key = SHA-256(credentialSecret)[:32];
+# IV = 16 random bytes; ciphertext = AES-256-CTR(key, IV, JSON.stringify(creds));
+# output string = IV.hex() + base64(ciphertext); file = {"$": output_string}.
+#
+# We write broker_tb.credentials.user as the LITERAL "${TB_GATEWAY_TOKEN}"
+# placeholder — NR substitutes it from the process env at runtime.
+
+
+def nr_encrypt_credentials(secret: str, creds: dict) -> str:
+    """Encrypt credentials dict with NR's AES-256-CTR scheme."""
+    import base64
+    import hashlib
+    import json as _json
+    import secrets as _secrets
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    key = hashlib.sha256(secret.encode("utf-8")).digest()
+    iv = _secrets.token_bytes(16)
+    encryptor = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend()).encryptor()
+    plaintext = _json.dumps(creds).encode("utf-8")
+    ct = encryptor.update(plaintext) + encryptor.finalize()
+    return iv.hex() + base64.b64encode(ct).decode("ascii")
+
+
+def write_nodered_cred_file(data_dir: Path, credential_secret: str) -> Path:
+    """Write flows_cred.json with broker_tb.credentials.user = ${TB_GATEWAY_TOKEN}."""
+    import json as _json
+    creds = {"broker_tb": {"user": "${TB_GATEWAY_TOKEN}", "password": ""}}
+    blob = nr_encrypt_credentials(credential_secret, creds)
+    target = data_dir / "flows_cred.json"
+    target.write_text(_json.dumps({"$": blob}) + "\n")
+    print(f"[✓] NR cred file:    {target} (broker_tb.user=${{TB_GATEWAY_TOKEN}} literal)")
+    return target
+
+
 def tb_login(url: str, user: str, password: str) -> str:
     """POST /api/auth/login → JWT. Raises ExternalError on failure."""
     try:
@@ -643,6 +687,12 @@ def main() -> int:
         write_secrets(client, env["tb_url"], devices, secrets_root)
     except OSError as e:
         print(f"[✗] secrets: {e}", file=sys.stderr)
+        return EXIT_UNEXPECTED
+    # Phase 7b: write NR flows_cred.json (encrypts ${TB_GATEWAY_TOKEN} literal)
+    try:
+        write_nodered_cred_file(Path(env["nr_data_dir"]), env["nr_credential_secret"])
+    except OSError as e:
+        print(f"[✗] NR cred file: {e}", file=sys.stderr)
         return EXIT_UNEXPECTED
     print(f"\nonboarding complete. servicios ML y blockchain-api pueden arrancar "
           f"(env_file apunta a deploy/secrets/{client}/).")
