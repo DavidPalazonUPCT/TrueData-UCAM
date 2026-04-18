@@ -6,6 +6,36 @@ Provisioning scripts for TRUEDATA UCAM.
 - `onboard_client_v2.py` — v2 pipeline (FR_ARAGON y nuevos clientes). Ver sección de abajo.
 - `clients/<CLIENT>.yaml` — manifests de cliente (v2).
 - `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored, mode 0600).
+  Tres ficheros por cliente: `ml-inference.env`, `airtrace-anchor.env`,
+  `nodered-gateway.env`. Los dos primeros los consume el servicio externo
+  correspondiente vía Docker `env_file:`. El tercero lo consume
+  `truedata-nodered/docker-compose.yml` (inyecta `TB_GATEWAY_TOKEN` como env
+  del container NR; NR substituye `${TB_GATEWAY_TOKEN}` en
+  `broker_tb.credentials.user` en runtime).
+- El script también regenera `truedata-nodered/data/flows_cred.json` con el
+  literal `${TB_GATEWAY_TOKEN}` cifrado (AES-256-CTR, `credentialSecret` de
+  `settings.js`). Cada ejecución produce un fichero diferente (IV random) pero
+  semánticamente equivalente.
+
+## Bring-up desde máquina limpia
+
+```bash
+# Una sola vez en el host:
+docker network create truedata_iot_network
+
+# Levanta TB+Postgres (no necesita CLIENT):
+docker compose up -d thingsboard
+
+# Onboarding del cliente:
+export TB_ADMIN_PASSWORD=tenant
+python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
+
+# NR: requiere CLIENT (path del env_file). Operador lo exporta o añade al `.env` raíz.
+export CLIENT=FR_ARAGON
+cd truedata-nodered && docker compose up -d && cd ..
+```
+
+Cero pasos manuales en la NR UI.
 
 ## onboard_client_v2.py — Testing Instructions
 

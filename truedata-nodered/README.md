@@ -55,19 +55,34 @@ El `flows.json` y `settings.js` se montan como bind mount desde este
 directorio, por lo que el flow `OPC Ingest v2` se carga automáticamente
 al arrancar.
 
-### Configuración del broker MQTT
+### Configuración del broker MQTT (automatizada)
 
 El flow contiene un config node `TB Gateway` que conecta a
-`thingsboard:1883`. **Las credenciales no se commitean** (encriptadas
-con un `credentialSecret` por instancia). Hay que setear manualmente el
-access token del Gateway device de TB en la UI:
+`thingsboard:1883` con el access token del device `OPC-Gateway`.
+**Todo el flow es reproducible desde cero** — no hay pasos manuales en la UI:
 
-1. Login en `http://localhost:1880` (ver credenciales abajo).
-2. Editar el config node `TB Gateway` → tab Security → `user =
-   <GATEWAY_TOKEN>` → Update → Deploy.
+1. `deploy/onboard_client_v2.py` crea (idempotente) el device `OPC-Gateway` en TB.
+2. El mismo script escribe `deploy/secrets/<CLIENT>/nodered-gateway.env` con
+   `TB_GATEWAY_TOKEN=<token>` (mode 0600) y regenera
+   `truedata-nodered/data/flows_cred.json` (cifrado AES-256-CTR con
+   `credentialSecret=airtrace` de `settings.js`) con el literal
+   `${TB_GATEWAY_TOKEN}` en `broker_tb.credentials.user`.
+3. `docker-compose.yml` inyecta el token via `env_file` (path parametrizado
+   por `${CLIENT}`). NR substituye `${TB_GATEWAY_TOKEN}` en runtime al
+   cargar el flow → MQTT auth contra TB.
 
-El `GATEWAY_TOKEN` se genera al crear el Gateway device en TB. Ver
-[`docs/SETUP.md`](../docs/SETUP.md) para el procedimiento completo.
+Bring-up completo desde una máquina limpia:
+
+```sh
+docker network create truedata_iot_network
+docker compose up -d thingsboard        # desde raíz, arranca TB+Postgres
+export TB_ADMIN_PASSWORD=tenant
+python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
+export CLIENT=FR_ARAGON                  # o añadir al .env raíz
+cd truedata-nodered && docker compose up -d
+```
+
+Para rotar el token: `--force` en el onboarding (regenera cred file + env file).
 
 ---
 
