@@ -63,10 +63,13 @@ El flow contiene un config node `TB Gateway` que conecta a
 
 1. `deploy/onboard_client_v2.py` crea (idempotente) el device `OPC-Gateway` en TB.
 2. El mismo script escribe `deploy/secrets/<CLIENT>/nodered-gateway.env` con
-   `TB_GATEWAY_TOKEN=<token>` (mode 0600) y regenera
+   `TB_GATEWAY_TOKEN=<token>` y regenera
    `truedata-nodered/data/flows_cred.json` (cifrado AES-256-CTR con
    `credentialSecret=airtrace` de `settings.js`) con el literal
-   `${TB_GATEWAY_TOKEN}` en `broker_tb.credentials.user`.
+   `${TB_GATEWAY_TOKEN}` en `broker_tb.credentials.user`. Los ficheros se
+   escriben con el umask por defecto del proceso; la protección al nivel
+   del filesystem es responsabilidad del operador (ver nota en
+   [`deploy/README.md`](../deploy/README.md)).
 3. `docker-compose.yml` inyecta el token via `env_file` (path parametrizado
    por `${CLIENT}`). NR substituye `${TB_GATEWAY_TOKEN}` en runtime al
    cargar el flow → MQTT auth contra TB.
@@ -112,8 +115,16 @@ docker exec truedata-nodered_tb-1 nc -zv thingsboard 1883
 |---|---|
 | URL editor | `http://localhost:1880` |
 | Usuario | `tenant` |
-| Password | hash bcrypt en `settings.js` (no recuperable desde el hash; si se pierde, regenerar con `node -e "console.log(require('bcryptjs').hashSync('tu_password', 8))"` y reescribir `settings.js`) |
-| `credentialSecret` | definido en `settings.js` (no cambiar post-deploy; invalida credentials cifradas) |
+| Password | hash bcrypt almacenado en `settings.js`. No recuperable desde el hash. Si se pierde: regenerar y reescribir (ver abajo) |
+| `credentialSecret` | definido en `settings.js`. No cambiar post-deploy: invalida los credentials cifrados de `flows_cred.json` |
+
+### Regenerar la password del editor NR
+
+```sh
+node -e "console.log(require('bcryptjs').hashSync('tu_password', 8))"
+# pegar el hash en settings.js → adminAuth.users[0].password
+docker compose restart nodered_tb
+```
 
 ---
 
@@ -162,12 +173,25 @@ El function node vive embebido en `data/flows.json`. Pasos internos:
 
 ---
 
+## Logs
+
+```sh
+# Logs en vivo de NR
+docker compose logs -f nodered_tb
+
+# Último arranque (útil para ver errores de MQTT auth)
+docker compose logs --tail=200 nodered_tb | grep -iE 'mqtt|auth|error'
+```
+
 ## Troubleshooting
 
 | Problema | Causa probable / mitigación |
 |---|---|
-| `POST /api/opc-ingest` devuelve `400 ts missing or not number` | El body debe llevar `ts` como número Unix ms. Ver [contracts/opc-ingest.md](../docs/contracts/opc-ingest.md) |
-| `POST /api/opc-ingest` devuelve `400 values missing or empty` | `values` debe ser un objeto no vacío |
-| Devices no aparecen en TB tras un POST válido | Verificar que el config node `TB Gateway` tenga el token correcto y el broker conecte a `thingsboard:1883` |
+| `POST /api/opc-ingest` devuelve `400 body not valid JSON object` | Body ausente o no parseable como JSON. Verificar `Content-Type: application/json` y que el body no esté vacío |
+| `POST /api/opc-ingest` devuelve `400 ts missing or not finite number` | `ts` debe ser Unix ms (`number`, finito). Ver [contracts/opc-ingest.md](../docs/contracts/opc-ingest.md) |
+| `POST /api/opc-ingest` devuelve `400 ts outside acceptable window` | `ts` fuera de `[now-30d, now+5min]`. Típico al replayear dumps antiguos: usar `simulator/opc_client_v2.py --shift-to-now` |
+| `POST /api/opc-ingest` devuelve `400 values must be non-empty object` | `values` debe ser un objeto JSON no vacío (no array, no null) |
+| Devices no aparecen en TB tras un POST válido | Verificar que `TB_GATEWAY_TOKEN` esté inyectado (`docker exec truedata-nodered-nodered_tb-1 printenv TB_GATEWAY_TOKEN`) y que el broker conecte a `thingsboard:1883` (logs de NR) |
+| `flows_cred.json` corrupto o desaparecido | Re-ejecutar `python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml` — lo regenera idempotentemente |
 | Salida ML silenciada permanentemente | `flow.ML_INFERENCE_URL` no está set. Para setearla en dev (con `NR_ADMIN_ENABLED=true`): `curl -X POST http://localhost:1880/admin/set-ml-url -H "Content-Type: application/json" -d '{"url":"http://<ml-host>:<port>/api/inference"}'` |
 | Cambios en `settings.js` no aplican | El archivo se monta como volumen; restart: `docker compose restart nodered_tb` |

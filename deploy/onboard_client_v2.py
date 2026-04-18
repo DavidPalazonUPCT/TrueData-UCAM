@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """onboard_client_v2.py — provisioning pipeline v2 para clientes UCAM.
-
-Spec: docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md
 """
 import argparse
 import os
 import re
-import stat
 import sys
 import time
 from datetime import datetime, timezone
@@ -471,28 +468,20 @@ def render_env(client: str, tb_host: str, device_name: str, token: str, service_
     )
 
 
-def ensure_dir_secure(path: Path, mode: int = 0o700) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    path.chmod(mode)
+def write_atomic(path: Path, content: str) -> None:
+    """Write file atomically, portably. No POSIX-mode enforcement.
 
-
-def secure_write(path: Path, content: str, mode: int = 0o600) -> None:
-    # Open with mode 0o600 from the start to avoid a window where the file is world-readable
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, mode)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-    except Exception:
-        if os.path.exists(path):
-            os.unlink(path)
-        raise
-    os.chmod(path, mode)  # enforce even if file existed with laxer mode
+    File-system-level protection is the operator's responsibility (OS user
+    perms on deploy/secrets/, disk encryption, etc.). See deploy/README.md.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content)
+    tmp.replace(path)
 
 
 def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) -> list[Path]:
     client_dir = secrets_root / client
-    ensure_dir_secure(client_dir, 0o700)
+    client_dir.mkdir(parents=True, exist_ok=True)
     specs = [
         ("ml",       "ml-inference.env",      "ML service"),
         ("airtrace", "airtrace-anchor.env",   "airtrace service"),
@@ -507,18 +496,18 @@ def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) 
             service_team=team,
         )
         target = client_dir / filename
-        secure_write(target, content, 0o600)
+        write_atomic(target, content)
         written.append(target)
-        print(f"[✓] secrets written: {target} (0600)")
+        print(f"[✓] secrets written: {target}")
     # Gateway env — consumed by NR docker-compose env_file
     gw_content = GATEWAY_ENV_TEMPLATE.format(
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         token=devices["gateway"]["token"],
     )
     gw_target = client_dir / "nodered-gateway.env"
-    secure_write(gw_target, gw_content, 0o600)
+    write_atomic(gw_target, gw_content)
     written.append(gw_target)
-    print(f"[✓] secrets written: {gw_target} (0600)")
+    print(f"[✓] secrets written: {gw_target}")
     return written
 
 

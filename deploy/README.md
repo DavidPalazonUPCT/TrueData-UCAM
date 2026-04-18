@@ -2,10 +2,10 @@
 
 Provisioning scripts for TRUEDATA UCAM.
 
-- `env_client.py` + `1_*.py` / `2_*.py` / `3_*.py` / `4_*.py` — v1 legacy orchestrator (sirve ESAMUR). No tocar.
+- `env_client.py` + `1_*.py` / `2_*.py` / `3_*.py` / `4_*.py` — v1 legacy orchestrator sin clientes activos. Preservado como referencia para el plan de contribución al monorepo gitlab.
 - `onboard_client_v2.py` — v2 pipeline (FR_ARAGON y nuevos clientes). Ver sección de abajo.
 - `clients/<CLIENT>.yaml` — manifests de cliente (v2).
-- `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored, mode 0600).
+- `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored).
   Tres ficheros por cliente: `ml-inference.env`, `airtrace-anchor.env`,
   `nodered-gateway.env`. Los dos primeros los consume el servicio externo
   correspondiente vía Docker `env_file:`. El tercero lo consume
@@ -16,6 +16,29 @@ Provisioning scripts for TRUEDATA UCAM.
   literal `${TB_GATEWAY_TOKEN}` cifrado (AES-256-CTR, `credentialSecret` de
   `settings.js`). Cada ejecución produce un fichero diferente (IV random) pero
   semánticamente equivalente.
+
+### Protección de `deploy/secrets/` (responsabilidad del operador)
+
+El script escribe los ficheros con el **umask por defecto del proceso**
+(típicamente produce `rw-r--r--` en Linux, `rwxrwxrwx` en WSL2/NTFS). La
+escritura es atómica (tmp + rename) pero **no se fuerza ningún file-mode
+POSIX-específico**, para que el código funcione idéntico en todos los OS
+(Linux, macOS, Windows, WSL2/NTFS, contenedores, etc.).
+
+La protección real es responsabilidad del operador del host. Opciones
+recomendadas (cualquiera basta en un PC embebido single-tenant):
+
+```bash
+# Linux/macOS: endurecer el directorio una vez
+chmod 700 deploy/secrets
+# o en WSL2 sobre NTFS:
+# — mover deploy/secrets a un filesystem ext4 (p.ej. /var/lib/truedata/secrets)
+# — o aceptar que las perms no se enforcen (MVP: dev machine, no hay secretos reales)
+```
+
+El target de la demo INCIBE es un PC embebido Linux donde `chmod 700`
+funciona. El dev machine WSL2 no necesita protección equivalente (no hay
+secretos de producción allí).
 
 ## Bring-up desde máquina limpia
 
@@ -69,7 +92,8 @@ ls deploy/secrets/ 2>/dev/null || echo "no secrets dir yet (OK)"
 python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
 # Expected: exit 0, stdout ends with "onboarding complete"
 ls -la deploy/secrets/FR_ARAGON/
-# Expected: 2 files mode -rw-------
+# Expected: 3 files (ml-inference.env, airtrace-anchor.env, nodered-gateway.env).
+# File-mode varía por OS/umask — ver nota "Protección de deploy/secrets/" arriba.
 ```
 
 ### 4. Idempotency
@@ -87,7 +111,7 @@ JWT=$(curl -s -X POST http://localhost:9090/api/auth/login \
     -d '{"username":"tenant@thingsboard.org","password":"'$TB_ADMIN_PASSWORD'"}' | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")
 curl -s "http://localhost:9090/api/deviceProfiles?pageSize=100&page=0" \
     -H "X-Authorization: Bearer $JWT" | python3 -m json.tool | grep '"name"'
-# Expected: contains sensor_planta, inference_input, inference_results, blockchain_anchor
+# Expected: contains Gateway, sensor_planta, inference_input, inference_results, blockchain_anchor (5 profiles)
 ```
 
 ### 6. Verify NR state
