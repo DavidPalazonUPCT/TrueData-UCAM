@@ -49,7 +49,11 @@ DEFAULT_TB_URL = "http://localhost:9090"
 DEFAULT_TB_USER = "tenant@thingsboard.org"
 DEFAULT_NR_URL = "http://localhost:1880"
 DEFAULT_NR_DATA_DIR = "truedata-nodered/data"
-DEFAULT_NR_CREDENTIAL_SECRET = "platform"  # see truedata-nodered/settings.js
+# Must match `credentialSecret` in truedata-nodered/settings.js. Override via
+# env var NODE_RED_CREDENTIAL_SECRET (name aligned with the monorepo's .env
+# convention). If this drifts from settings.js, Node-RED will boot with
+# "Encrypted credentials not found" and the MQTT broker will fail auth.
+DEFAULT_NR_CREDENTIAL_SECRET = "platform"
 
 
 def read_env() -> dict:
