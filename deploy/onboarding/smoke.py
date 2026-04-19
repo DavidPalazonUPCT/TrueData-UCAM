@@ -10,7 +10,7 @@ import requests
 from deploy.onboarding.tb import (
     ExternalError,
     HTTP_TIMEOUT,
-    _auth_headers,
+    auth_headers,
 )
 
 
@@ -44,7 +44,7 @@ def tb_get_timeseries(url: str, jwt: str, device_id: str, keys: list[str], start
     r = requests.get(
         f"{url}/api/plugins/telemetry/DEVICE/{device_id}/values/timeseries"
         f"?keys={keys_csv}&startTs={start_ts}&endTs={end_ts}&limit=1",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         timeout=HTTP_TIMEOUT,
     )
     if r.status_code != 200:

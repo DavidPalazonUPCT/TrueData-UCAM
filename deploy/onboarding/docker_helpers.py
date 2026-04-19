@@ -12,7 +12,7 @@ from typing import Callable
 
 import requests
 
-from deploy.onboarding.tb import ExternalError, HTTP_TIMEOUT  # noqa: F401
+from deploy.onboarding.tb import ExternalError
 
 
 # Repo root — three levels above this file:
@@ -38,7 +38,7 @@ def _tb_reachable(url: str, user: str, password: str) -> bool:
         return False
 
 
-def _nr_reachable(url: str) -> bool:
+def nr_reachable(url: str) -> bool:
     """NR responde en / (editor) con 200 o 302."""
     try:
         r = requests.get(f"{url}/", timeout=3)
@@ -109,10 +109,10 @@ def ensure_nr_up(nr_url: str, client: str) -> None:
     los consume via `env_file:`. Se inyecta CLIENT al subprocess para que
     el placeholder `${CLIENT}` del compose se resuelva correctamente.
     """
-    if _nr_reachable(nr_url):
+    if nr_reachable(nr_url):
         return
     print(f"[…] NR no responde en {nr_url} — arrancando via `docker compose up -d nodered_tb`")
     _compose_up("nodered_tb", extra_env={"CLIENT": client})
-    if not _wait_until(lambda: _nr_reachable(nr_url), timeout=60, label="NR ready", interval=3):
+    if not _wait_until(lambda: nr_reachable(nr_url), timeout=60, label="NR ready", interval=3):
         raise ExternalError(f"NR did not become reachable at {nr_url} within 60s")
     print(f"[✓] NR up at {nr_url}")

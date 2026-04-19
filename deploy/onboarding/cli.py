@@ -20,7 +20,7 @@ from deploy.onboarding.nodered import (  # noqa: E402
     write_nodered_runtime_config, write_nodered_cred_file,
 )
 from deploy.onboarding.docker_helpers import (  # noqa: E402
-    _nr_reachable, ensure_tb_up, ensure_nr_up,
+    nr_reachable, ensure_tb_up, ensure_nr_up,
 )
 from deploy.onboarding.smoke import SmokeError, smoke_tests  # noqa: E402
 from deploy.onboarding.tb import (  # noqa: E402
@@ -114,7 +114,7 @@ def main() -> int:
         except ExternalError as e:
             print(f"[dry-run] {e}", file=sys.stderr)
             return EXIT_EXTERNAL
-        if _nr_reachable(env["nr_url"]):
+        if nr_reachable(env["nr_url"]):
             print(f"[dry-run] NR ping:  {env['nr_url']} OK")
         else:
             print(f"[dry-run] NR unreachable at {env['nr_url']}", file=sys.stderr)
@@ -196,7 +196,7 @@ def main() -> int:
         except ExternalError as e:
             print(f"[✗] {e}", file=sys.stderr)
             return EXIT_EXTERNAL
-    elif not _nr_reachable(env["nr_url"]):
+    elif not nr_reachable(env["nr_url"]):
         print(f"[✗] NR unreachable at {env['nr_url']} (--no-autostart active)", file=sys.stderr)
         return EXIT_EXTERNAL
     # Phase 7: smoke tests

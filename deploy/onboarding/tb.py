@@ -18,14 +18,14 @@ REQUIRED_PROFILES = {
 }
 
 
-def _auth_headers(jwt: str) -> dict:
+def auth_headers(jwt: str) -> dict:
     return {"X-Authorization": f"Bearer {jwt}"}
 
 
 def tb_list_profiles(url: str, jwt: str) -> list[dict]:
     r = requests.get(
         f"{url}/api/deviceProfiles?pageSize=100&page=0",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         timeout=HTTP_TIMEOUT,
     )
     if r.status_code != 200:
@@ -50,7 +50,7 @@ def tb_create_profile(url: str, jwt: str, name: str, description: str) -> str:
     }
     r = requests.post(
         f"{url}/api/deviceProfile",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         json=body,
         timeout=HTTP_TIMEOUT,
     )
@@ -77,7 +77,7 @@ def ensure_profiles(url: str, jwt: str) -> dict[str, str]:
 def tb_get_device_by_name(url: str, jwt: str, name: str) -> dict | None:
     r = requests.get(
         f"{url}/api/tenant/devices?deviceName={name}",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         timeout=HTTP_TIMEOUT,
     )
     if r.status_code == 200 and r.json():
@@ -108,7 +108,7 @@ def tb_create_device(
     }
     r = requests.post(
         f"{url}/api/device",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         json=body,
         timeout=HTTP_TIMEOUT,
     )
@@ -130,7 +130,7 @@ def tb_ensure_additional_info(url: str, jwt: str, device: dict, extra_info: dict
     body = {**device, "additionalInfo": updated}
     r = requests.post(
         f"{url}/api/device",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         json=body,
         timeout=HTTP_TIMEOUT,
     )
@@ -143,7 +143,7 @@ def tb_ensure_additional_info(url: str, jwt: str, device: dict, extra_info: dict
 def tb_get_credentials(url: str, jwt: str, device_id: str) -> str:
     r = requests.get(
         f"{url}/api/device/{device_id}/credentials",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         timeout=HTTP_TIMEOUT,
     )
     if r.status_code != 200:
@@ -165,7 +165,7 @@ def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
     import string as _string
     r_get = requests.get(
         f"{url}/api/device/{device_id}/credentials",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         timeout=HTTP_TIMEOUT,
     )
     if r_get.status_code != 200:
@@ -176,7 +176,7 @@ def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
     creds["credentialsId"] = new_token
     r = requests.post(
         f"{url}/api/device/credentials",
-        headers=_auth_headers(jwt),
+        headers=auth_headers(jwt),
         json=creds,
         timeout=HTTP_TIMEOUT,
     )
