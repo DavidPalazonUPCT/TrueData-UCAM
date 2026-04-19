@@ -6,13 +6,12 @@ en Windows el `py.exe` launcher podía delegar a un `python3.exe` alias roto de
 Microsoft Store y provocar `ModuleNotFoundError` espurios.
 """
 import argparse
-import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import requests
 from dotenv import find_dotenv, load_dotenv
@@ -31,6 +30,10 @@ from deploy.onboarding.secrets import (  # noqa: E402
     render_env,
     write_atomic,
     write_secrets,
+)
+from deploy.onboarding.nodered import (  # noqa: E402
+    NR_RUNTIME_CONFIG_FILENAME,
+    write_nodered_runtime_config, write_nodered_cred_file,
 )
 from deploy.onboarding.smoke import SmokeError, smoke_tests  # noqa: E402
 from deploy.onboarding.tb import (  # noqa: E402
@@ -95,10 +98,8 @@ def read_env() -> dict:
 # ============================================================================
 # Runtime config for NR function flow
 # ============================================================================
-
-
-NR_RUNTIME_CONFIG_FILENAME = "runtime_config.json"
-
+# NR_RUNTIME_CONFIG_FILENAME, write_nodered_runtime_config, nr_encrypt_credentials,
+# write_nodered_cred_file → moved to deploy/onboarding/nodered.py (R6)
 
 # ============================================================================
 # Smoke tests (spec §7 Fase 6)
@@ -111,65 +112,6 @@ NR_RUNTIME_CONFIG_FILENAME = "runtime_config.json"
 # ============================================================================
 # ENV_TEMPLATE, GATEWAY_ENV_TEMPLATE, render_env, write_atomic, write_secrets
 # → moved to deploy/onboarding/secrets.py (R3)
-
-
-def write_nodered_runtime_config(data_dir: Path, manifest: dict) -> Path:
-    """Write runtime config consumed by fn_main from /data/runtime_config.json."""
-    runtime_config: dict[str, Any] = {
-        "expected_tags": manifest["sensors"]["expected_tags"],
-    }
-    ai_url = (manifest.get("ai_inference") or {}).get("url")
-    if ai_url:
-        runtime_config["ai_inference_url"] = ai_url
-    target = data_dir / NR_RUNTIME_CONFIG_FILENAME
-    payload = json.dumps(runtime_config, ensure_ascii=True, separators=(",", ":")) + "\n"
-    write_atomic(target, payload)
-    ai_status = "<set>" if ai_url else "<cleared>"
-    print(
-        f"[✓] NR runtime cfg:  {target} "
-        f"(EXPECTED_TAGS={len(runtime_config['expected_tags'])}, AI_INFERENCE_URL={ai_status})"
-    )
-    return target
-
-
-# ============================================================================
-# NR credentials store (flows_cred.json)
-# ============================================================================
-#
-# Replicates Node-RED's AES-256-CTR encryption for flows_cred.json. Algorithm
-# (from @node-red/util/lib/util.js): key = SHA-256(credentialSecret)[:32];
-# IV = 16 random bytes; ciphertext = AES-256-CTR(key, IV, JSON.stringify(creds));
-# output string = IV.hex() + base64(ciphertext); file = {"$": output_string}.
-#
-# We write broker_tb.credentials.user as the LITERAL "${TB_GATEWAY_TOKEN}"
-# placeholder — NR substitutes it from the process env at runtime.
-
-
-def nr_encrypt_credentials(secret: str, creds: dict) -> str:
-    """Encrypt credentials dict with NR's AES-256-CTR scheme."""
-    import base64
-    import hashlib
-    import json as _json
-    import secrets as _secrets
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    key = hashlib.sha256(secret.encode("utf-8")).digest()
-    iv = _secrets.token_bytes(16)
-    encryptor = Cipher(algorithms.AES(key), modes.CTR(iv), backend=default_backend()).encryptor()
-    plaintext = _json.dumps(creds).encode("utf-8")
-    ct = encryptor.update(plaintext) + encryptor.finalize()
-    return iv.hex() + base64.b64encode(ct).decode("ascii")
-
-
-def write_nodered_cred_file(data_dir: Path, credential_secret: str) -> Path:
-    """Write flows_cred.json with broker_tb.credentials.user = ${TB_GATEWAY_TOKEN}."""
-    import json as _json
-    creds = {"broker_tb": {"user": "${TB_GATEWAY_TOKEN}", "password": ""}}
-    blob = nr_encrypt_credentials(credential_secret, creds)
-    target = data_dir / "flows_cred.json"
-    target.write_text(_json.dumps({"$": blob}) + "\n")
-    print(f"[✓] NR cred file:    {target} (broker_tb.user=${{TB_GATEWAY_TOKEN}} literal)")
-    return target
 
 
 # ============================================================================
