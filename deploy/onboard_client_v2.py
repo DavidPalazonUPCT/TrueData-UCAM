@@ -1,17 +1,40 @@
-#!/usr/bin/env python3
-"""onboard_client_v2.py — provisioning pipeline v2 para clientes UCAM.
+"""onboard_client_v2.py — provisioning pipeline v2 para clientes de la plataforma.
+
+Invocar explícitamente con Python 3.9+: `python3 deploy/onboard_client_v2.py ...`
+en Linux/macOS o `py deploy\\onboard_client_v2.py ...` en Windows. Sin shebang:
+en Windows el `py.exe` launcher podía delegar a un `python3.exe` alias roto de
+Microsoft Store y provocar `ModuleNotFoundError` espurios.
 """
 import argparse
+import json
 import os
-import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
-import yaml
+from dotenv import find_dotenv, load_dotenv
+
+# Ensure repo root is on sys.path so `deploy.*` is importable when this script
+# is invoked directly (python3 deploy/onboard_client_v2.py …) rather than via
+# `python -m deploy.onboarding`.
+_REPO_ROOT_FOR_PATH = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT_FOR_PATH) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT_FOR_PATH))
+
+from deploy.onboarding.manifest import ManifestError, load_manifest  # noqa: E402
+
+# Carga `.env` desde la raíz del repo (o cualquier ancestor) al entorno del
+# proceso. Variables ya seteadas en el shell ganan: load_dotenv no sobrescribe
+# por default, lo que permite CI/CD inyectar credenciales sin tocar .env.
+load_dotenv(find_dotenv(usecwd=True))
+
+# Raíz del repo (dos niveles arriba del script): se usa como cwd al invocar
+# `docker compose` desde los auto-start helpers.
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ============================================================================
 # Exit codes (spec §6.4)
@@ -24,68 +47,6 @@ EXIT_SMOKE_FAILED = 4
 
 
 # ============================================================================
-# Manifest loading + validation (spec §5)
-# ============================================================================
-
-CLIENT_ID_RE = re.compile(r"^[A-Z0-9_]+$")
-TAG_RE = re.compile(r"^[A-Za-z0-9_]+$")
-URL_RE = re.compile(r"^https?://")
-
-
-class ManifestError(ValueError):
-    """Raised when manifest fails schema validation."""
-
-
-def load_manifest(path: Path) -> dict[str, Any]:
-    """Load YAML, validate schema, return normalized dict.
-
-    Raises:
-        FileNotFoundError: if path doesn't exist
-        ManifestError: if schema is invalid
-    """
-    if not path.exists():
-        raise FileNotFoundError(f"manifest: file not found: {path}")
-    with path.open() as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ManifestError("manifest: top-level must be a mapping")
-    _validate(data)
-    return data
-
-
-def _validate(m: dict) -> None:
-    # client.id
-    client = m.get("client")
-    if not isinstance(client, dict):
-        raise ManifestError("manifest: 'client' block is required")
-    cid = client.get("id")
-    if not isinstance(cid, str) or not CLIENT_ID_RE.match(cid) or not (3 <= len(cid) <= 32):
-        raise ManifestError(f"manifest: client.id {cid!r}: must match ^[A-Z0-9_]+$ and be 3-32 chars")
-    # client.name
-    if not isinstance(client.get("name"), str) or not client["name"].strip():
-        raise ManifestError("manifest: client.name must be non-empty string")
-    # sensors.expected_tags
-    sensors = m.get("sensors")
-    if not isinstance(sensors, dict):
-        raise ManifestError("manifest: 'sensors' block is required")
-    tags = sensors.get("expected_tags")
-    if not isinstance(tags, list) or not (1 <= len(tags) <= 200):
-        raise ManifestError("manifest: sensors.expected_tags must be a list of 1..200 items")
-    if len(set(tags)) != len(tags):
-        dupes = [t for t in tags if tags.count(t) > 1]
-        raise ManifestError(f"manifest: sensors.expected_tags has duplicates: {set(dupes)}")
-    for t in tags:
-        if not isinstance(t, str) or not TAG_RE.match(t):
-            raise ManifestError(f"manifest: tag {t!r}: must match ^[A-Za-z0-9_]+$")
-    # ml_inference.url (optional)
-    ml = m.get("ml_inference") or {}
-    ml_url = ml.get("url")
-    if ml_url is not None:
-        if not isinstance(ml_url, str) or not URL_RE.match(ml_url):
-            raise ManifestError(f"manifest: ml_inference.url {ml_url!r}: must start with http:// or https://")
-
-
-# ============================================================================
 # Env vars (spec §6.3)
 # ============================================================================
 
@@ -93,7 +54,7 @@ DEFAULT_TB_URL = "http://localhost:9090"
 DEFAULT_TB_USER = "tenant@thingsboard.org"
 DEFAULT_NR_URL = "http://localhost:1880"
 DEFAULT_NR_DATA_DIR = "truedata-nodered/data"
-DEFAULT_NR_CREDENTIAL_SECRET = "airtrace"  # see truedata-nodered/settings.js
+DEFAULT_NR_CREDENTIAL_SECRET = "platform"  # see truedata-nodered/settings.js
 
 
 def read_env() -> dict:
@@ -111,7 +72,7 @@ def read_env() -> dict:
         "tb_password": password,
         "nr_url": os.environ.get("NR_URL", DEFAULT_NR_URL).rstrip("/"),
         "nr_data_dir": os.environ.get("NR_DATA_DIR", DEFAULT_NR_DATA_DIR),
-        "nr_credential_secret": os.environ.get("NR_CREDENTIAL_SECRET", DEFAULT_NR_CREDENTIAL_SECRET),
+        "nr_credential_secret": os.environ.get("NODE_RED_CREDENTIAL_SECRET", DEFAULT_NR_CREDENTIAL_SECRET),
     }
 
 
@@ -129,9 +90,9 @@ class ExternalError(RuntimeError):
 REQUIRED_PROFILES = {
     "Gateway":              "Device profile del Gateway MQTT (NR → TB). Ver ADR-003.",
     "sensor_planta":        "Device profile para sensores del PLC (v2). Ver ADR-003.",
-    "inference_input":      "Audit-trail del snapshot LOCF enviado al servicio ML. Ver ml-inference.md §A8.",
-    "inference_results":    "Writebacks del servicio ML. Ver ml-writeback.md.",
-    "blockchain_anchor":    "Writebacks de airtrace. Ver airtrace-writeback.md.",
+    "inference_input":      "Audit-trail del snapshot LOCF enviado al servicio AI. Ver ai-inference.md §A8.",
+    "inference_results":    "Writebacks del servicio AI. Ver ai-writeback.md.",
+    "blockchain_anchor":    "Writebacks del servicio blockchain. Ver blockchain-writeback.md.",
 }
 
 
@@ -206,12 +167,22 @@ def tb_get_device_by_name(url: str, jwt: str, name: str) -> dict | None:
     return None
 
 
-def tb_create_device(url: str, jwt: str, name: str, profile_id: str, description: str) -> str:
+def tb_create_device(
+    url: str,
+    jwt: str,
+    name: str,
+    profile_id: str,
+    description: str,
+    extra_info: dict | None = None,
+) -> str:
+    additional_info: dict = {"description": description}
+    if extra_info:
+        additional_info.update(extra_info)
     body = {
         "name": name,
         "type": name.split("-")[0],  # arbitrary label for UI grouping
         "deviceProfileId": {"entityType": "DEVICE_PROFILE", "id": profile_id},
-        "additionalInfo": {"description": description},
+        "additionalInfo": additional_info,
     }
     r = requests.post(
         f"{url}/api/device",
@@ -222,6 +193,29 @@ def tb_create_device(url: str, jwt: str, name: str, profile_id: str, description
     if r.status_code >= 400:
         raise ExternalError(f"TB create device {name!r}: HTTP {r.status_code}: {r.text[:200]}")
     return r.json()["id"]["id"]
+
+
+def tb_ensure_additional_info(url: str, jwt: str, device: dict, extra_info: dict) -> None:
+    """Idempotently merge `extra_info` into an existing device's additionalInfo.
+
+    No-op if all keys already match. Required for the Gateway flag: TB silently
+    drops `v1/gateway/*` messages from devices without `additionalInfo.gateway=true`.
+    """
+    current = dict(device.get("additionalInfo") or {})
+    if all(current.get(k) == v for k, v in extra_info.items()):
+        return
+    updated = {**current, **extra_info}
+    body = {**device, "additionalInfo": updated}
+    r = requests.post(
+        f"{url}/api/device",
+        headers=_auth_headers(jwt),
+        json=body,
+        timeout=HTTP_TIMEOUT,
+    )
+    if r.status_code >= 400:
+        raise ExternalError(
+            f"TB update additionalInfo {device.get('name')!r}: HTTP {r.status_code}: {r.text[:200]}"
+        )
 
 
 def tb_get_credentials(url: str, jwt: str, device_id: str) -> str:
@@ -275,8 +269,8 @@ def tb_rotate_credentials(url: str, jwt: str, device_id: str) -> str:
 def ensure_writeback_devices(url: str, jwt: str, client: str, profile_ids: dict, force: bool) -> dict:
     """Idempotently ensure 2 writeback devices exist. Returns {role: {id, token, name}}."""
     devices_spec = [
-        ("ml",       f"ml-inference-{client}",    "inference_results",    f"Writeback del servicio ML. Cliente: {client}."),
-        ("airtrace", f"airtrace-anchor-{client}", "blockchain_anchor",    f"Writeback del servicio airtrace. Cliente: {client}."),
+        ("ai",         f"ai-inference-{client}",      "inference_results",    f"Writeback del servicio AI. Cliente: {client}."),
+        ("blockchain", f"blockchain-anchor-{client}", "blockchain_anchor",    f"Writeback del servicio blockchain. Cliente: {client}."),
     ]
     result = {}
     for role, name, profile_name, description in devices_spec:
@@ -306,9 +300,12 @@ def ensure_gateway_device(url: str, jwt: str, profile_ids: dict, force: bool) ->
     """
     name = "OPC-Gateway"
     description = "Gateway MQTT para publicación de telemetría desde Node-RED. Ver ADR-003."
+    # TB only accepts v1/gateway/* from devices with additionalInfo.gateway=true.
+    gateway_info = {"gateway": True, "overwriteActivityTime": False}
     existing = tb_get_device_by_name(url, jwt, name)
     if existing:
         dev_id = existing["id"]["id"]
+        tb_ensure_additional_info(url, jwt, existing, gateway_info)
         if force:
             token = tb_rotate_credentials(url, jwt, dev_id)
             print(f"[↻] device  {name:35s} rotated  token={token[:4]}...{token[-2:]}")
@@ -316,59 +313,20 @@ def ensure_gateway_device(url: str, jwt: str, profile_ids: dict, force: bool) ->
             token = tb_get_credentials(url, jwt, dev_id)
             print(f"[=] device  {name:35s} existed  token={token[:4]}...{token[-2:]}")
     else:
-        dev_id = tb_create_device(url, jwt, name, profile_ids["Gateway"], description)
+        dev_id = tb_create_device(
+            url, jwt, name, profile_ids["Gateway"], description, extra_info=gateway_info
+        )
         token = tb_get_credentials(url, jwt, dev_id)
         print(f"[✓] device  {name:35s} created  token={token[:4]}...{token[-2:]}")
     return {"id": dev_id, "token": token, "name": name}
 
 
 # ============================================================================
-# NR admin helpers (spec §7 Fase 5)
+# Runtime config for NR function flow
 # ============================================================================
 
 
-def nr_set_expected_tags(url: str, tags: list[str]) -> None:
-    r = requests.post(
-        f"{url}/admin/set-expected-tags",
-        json={"tags": tags},
-        timeout=HTTP_TIMEOUT,
-    )
-    if r.status_code != 200:
-        raise ExternalError(f"NR set-expected-tags: HTTP {r.status_code}: {r.text[:200]}")
-
-
-def nr_set_ml_url(url: str, ml_url: str) -> None:
-    r = requests.post(
-        f"{url}/admin/set-ml-url",
-        json={"url": ml_url},
-        timeout=HTTP_TIMEOUT,
-    )
-    if r.status_code != 200:
-        raise ExternalError(f"NR set-ml-url: HTTP {r.status_code}: {r.text[:200]}")
-
-
-def nr_clear_ml_url(url: str) -> None:
-    r = requests.post(
-        f"{url}/admin/clear-ml-url",
-        timeout=HTTP_TIMEOUT,
-    )
-    if r.status_code != 200:
-        raise ExternalError(f"NR clear-ml-url: HTTP {r.status_code}: {r.text[:200]}")
-
-
-def configure_nodered(url: str, manifest: dict) -> None:
-    tags = manifest["sensors"]["expected_tags"]
-    try:
-        nr_set_expected_tags(url, tags)
-    except requests.RequestException as e:
-        raise ExternalError(f"NR unreachable: {e.__class__.__name__}")
-    ml_url = (manifest.get("ml_inference") or {}).get("url")
-    if ml_url:
-        nr_set_ml_url(url, ml_url)
-        print(f"[✓] NR configured:   EXPECTED_TAGS=[{len(tags)} tags], ML_INFERENCE_URL=<set>")
-    else:
-        nr_clear_ml_url(url)
-        print(f"[✓] NR configured:   EXPECTED_TAGS=[{len(tags)} tags], ML_INFERENCE_URL=<cleared>")
+NR_RUNTIME_CONFIG_FILENAME = "runtime_config.json"
 
 
 # ============================================================================
@@ -380,8 +338,8 @@ class SmokeError(RuntimeError):
     """Raised when smoke test verification fails."""
 
 
-ML_SMOKE_BODY = {"score": 0.42, "model_version": "smoke-test", "latency_ms": 10, "status": "ok"}
-AIRTRACE_SMOKE_BODY = {
+AI_SMOKE_BODY = {"score": 0.42, "model_version": "smoke-test", "latency_ms": 10, "status": "ok"}
+BLOCKCHAIN_SMOKE_BODY = {
     "status": "confirmed",
     "chain_id": "smoke-test",
     "tx_hash": "0xdeadbeef",
@@ -417,20 +375,20 @@ def tb_get_timeseries(url: str, jwt: str, device_id: str, keys: list[str], start
 def smoke_tests(tb_url: str, jwt: str, devices: dict) -> None:
     """Phase 6: POST fake telemetry + verify persistence."""
     ts = int(time.time() * 1000)
-    # ML
-    ml_values = dict(ML_SMOKE_BODY)
-    tb_post_telemetry(tb_url, devices["ml"]["token"], ts, ml_values)
-    # Airtrace
-    at_values = dict(AIRTRACE_SMOKE_BODY, anchor_ts=ts + 15000)
-    tb_post_telemetry(tb_url, devices["airtrace"]["token"], ts, at_values)
+    # AI
+    ai_values = dict(AI_SMOKE_BODY)
+    tb_post_telemetry(tb_url, devices["ai"]["token"], ts, ai_values)
+    # Blockchain
+    bc_values = dict(BLOCKCHAIN_SMOKE_BODY, anchor_ts=ts + 15000)
+    tb_post_telemetry(tb_url, devices["blockchain"]["token"], ts, bc_values)
     # Wait + verify
     time.sleep(1)
-    for role, expected in [("ml", list(ML_SMOKE_BODY.keys())), ("airtrace", list(AIRTRACE_SMOKE_BODY.keys()))]:
+    for role, expected in [("ai", list(AI_SMOKE_BODY.keys())), ("blockchain", list(BLOCKCHAIN_SMOKE_BODY.keys()))]:
         data = tb_get_timeseries(tb_url, jwt, devices[role]["id"], expected, ts - 1, ts + 1)
         missing = [k for k in expected if not data.get(k)]
         if missing:
             raise SmokeError(f"smoke test {role}: keys missing after 1s: {missing}")
-    print(f"[✓] smoke tests:     ML 200 OK (score persisted), airtrace 200 OK (tx_hash persisted)")
+    print(f"[✓] smoke tests:     AI 200 OK (score persisted), blockchain 200 OK (tx_hash persisted)")
 
 
 # ============================================================================
@@ -479,12 +437,31 @@ def write_atomic(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def write_nodered_runtime_config(data_dir: Path, manifest: dict) -> Path:
+    """Write runtime config consumed by fn_main from /data/runtime_config.json."""
+    runtime_config: dict[str, Any] = {
+        "expected_tags": manifest["sensors"]["expected_tags"],
+    }
+    ai_url = (manifest.get("ai_inference") or {}).get("url")
+    if ai_url:
+        runtime_config["ai_inference_url"] = ai_url
+    target = data_dir / NR_RUNTIME_CONFIG_FILENAME
+    payload = json.dumps(runtime_config, ensure_ascii=True, separators=(",", ":")) + "\n"
+    write_atomic(target, payload)
+    ai_status = "<set>" if ai_url else "<cleared>"
+    print(
+        f"[✓] NR runtime cfg:  {target} "
+        f"(EXPECTED_TAGS={len(runtime_config['expected_tags'])}, AI_INFERENCE_URL={ai_status})"
+    )
+    return target
+
+
 def write_secrets(client: str, tb_host: str, devices: dict, secrets_root: Path) -> list[Path]:
     client_dir = secrets_root / client
     client_dir.mkdir(parents=True, exist_ok=True)
     specs = [
-        ("ml",       "ml-inference.env",      "ML service"),
-        ("airtrace", "airtrace-anchor.env",   "airtrace service"),
+        ("ai",         "ai-inference.env",      "AI service"),
+        ("blockchain", "blockchain-anchor.env", "blockchain service"),
     ]
     written = []
     for role, filename, team in specs:
@@ -571,6 +548,114 @@ def tb_login(url: str, user: str, password: str) -> str:
     return token
 
 
+# ============================================================================
+# Auto-start helpers (bring-up from-scratch con un solo comando)
+#
+# El onboarding detecta si TB o NR no están arriba y los levanta vía
+# `docker compose up -d <service>` desde la raíz del repo. Idempotente:
+# si el servicio ya está arriba, es un no-op. Permite al operador correr
+# un único comando: `python3 deploy/onboard_client_v2.py --manifest ...`.
+# ============================================================================
+
+
+def _tb_reachable(url: str, user: str, password: str) -> bool:
+    """TB está realmente listo solo cuando `POST /api/auth/login` responde 200
+    con body JSON conteniendo un token. La UI de `/login` carga antes, pero
+    la REST API de auth puede tardar varios segundos más tras el arranque.
+    """
+    try:
+        r = requests.post(
+            f"{url}/api/auth/login",
+            json={"username": user, "password": password},
+            timeout=3,
+        )
+        if r.status_code != 200:
+            return False
+        return "token" in r.text  # no parseamos JSON: basta con un marker barato
+    except requests.RequestException:
+        return False
+
+
+def _nr_reachable(url: str) -> bool:
+    """NR responde en / (editor) con 200 o 302."""
+    try:
+        r = requests.get(f"{url}/", timeout=3)
+        return r.status_code in (200, 302)
+    except requests.RequestException:
+        return False
+
+
+def _compose_up(service: str, extra_env: dict | None = None) -> None:
+    """Ejecuta `docker compose up -d <service>` desde la raíz del repo."""
+    proc_env = {**os.environ}
+    if extra_env:
+        proc_env.update(extra_env)
+    try:
+        subprocess.run(
+            ["docker", "compose", "up", "-d", service],
+            check=True, capture_output=True, text=True,
+            cwd=REPO_ROOT, env=proc_env,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ExternalError(
+            f"`docker compose up -d {service}` failed (exit {e.returncode}): "
+            f"{e.stderr.strip()[:300]}"
+        )
+    except FileNotFoundError:
+        raise ExternalError(
+            "`docker` CLI not found in PATH — install Docker Desktop / docker CLI"
+        )
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float, label: str, interval: float = 3.0) -> bool:
+    """Bloquea hasta que predicate() sea True o se agote timeout."""
+    start = time.monotonic()
+    last_print = 0.0
+    while time.monotonic() - start < timeout:
+        if predicate():
+            return True
+        now = time.monotonic()
+        if now - last_print >= 10:  # log cada ~10 s para no spamear
+            print(f"[…] waiting for {label} ({int(now - start)}s)...", file=sys.stderr)
+            last_print = now
+        time.sleep(interval)
+    return False
+
+
+def ensure_tb_up(tb_url: str, user: str, password: str) -> None:
+    """Si TB no responde a login, arranca el servicio y espera healthy.
+    Primer arranque tarda ~90 s (migraciones Postgres); damos 180 s de colchón.
+    El predicado valida no solo que TB esté vivo, sino que su REST API de auth
+    responda con un token — evita falsos positivos de la UI que carga antes.
+    """
+    if _tb_reachable(tb_url, user, password):
+        return
+    print(f"[…] TB no responde en {tb_url} — arrancando via `docker compose up -d thingsboard`")
+    _compose_up("thingsboard")
+    if not _wait_until(
+        lambda: _tb_reachable(tb_url, user, password),
+        timeout=180, label="TB login ready", interval=5,
+    ):
+        raise ExternalError(f"TB did not become reachable at {tb_url} within 180s")
+    print(f"[✓] TB up at {tb_url}")
+
+
+def ensure_nr_up(nr_url: str, client: str) -> None:
+    """Si NR no responde, arranca el servicio y espera healthcheck.
+
+    Pre-requisito: secrets ya escritos (Phase 5 + 5b) — el compose de NR
+    los consume via `env_file:`. Se inyecta CLIENT al subprocess para que
+    el placeholder `${CLIENT}` del compose se resuelva correctamente.
+    """
+    if _nr_reachable(nr_url):
+        return
+    print(f"[…] NR no responde en {nr_url} — arrancando via `docker compose up -d nodered_tb`")
+    _compose_up("nodered_tb", extra_env={"CLIENT": client})
+    if not _wait_until(lambda: _nr_reachable(nr_url), timeout=60, label="NR ready", interval=3):
+        raise ExternalError(f"NR did not become reachable at {nr_url} within 60s")
+    print(f"[✓] NR up at {nr_url}")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="onboard_client_v2.py",
@@ -580,6 +665,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="Valida manifest + pings, no aplica cambios")
     p.add_argument("--force", action="store_true", help="Rota tokens de devices existentes")
     p.add_argument("-v", "--verbose", action="store_true", help="Loggea cada request HTTP")
+    p.add_argument(
+        "--no-autostart",
+        action="store_true",
+        help="No auto-lanzar `docker compose up -d` si TB/NR no responden (failfast).",
+    )
     return p.parse_args()
 
 
@@ -609,28 +699,33 @@ def main() -> int:
         except ExternalError as e:
             print(f"[dry-run] {e}", file=sys.stderr)
             return EXIT_EXTERNAL
-        try:
-            r = requests.get(f"{env['nr_url']}/admin/get-expected-tags", timeout=HTTP_TIMEOUT)
-            r.raise_for_status()
+        if _nr_reachable(env["nr_url"]):
             print(f"[dry-run] NR ping:  {env['nr_url']} OK")
-        except requests.RequestException as e:
-            print(f"[dry-run] NR unreachable: {e.__class__.__name__}", file=sys.stderr)
+        else:
+            print(f"[dry-run] NR unreachable at {env['nr_url']}", file=sys.stderr)
             return EXIT_EXTERNAL
         existing = {p["name"] for p in tb_list_profiles(env["tb_url"], jwt)}
         would_create_profiles = [p for p in REQUIRED_PROFILES if p not in existing]
         would_create_devices = []
-        for name in [f"ml-inference-{client}", f"airtrace-anchor-{client}"]:
+        for name in [f"ai-inference-{client}", f"blockchain-anchor-{client}"]:
             if not tb_get_device_by_name(env["tb_url"], jwt, name):
                 would_create_devices.append(name)
-        ml_url = (manifest.get("ml_inference") or {}).get("url")
-        ml_action = "set-ml-url" if ml_url else "clear-ml-url"
         print(f"[dry-run] would create: {len(would_create_profiles)} profiles: {would_create_profiles}")
         print(f"[dry-run] would create: {len(would_create_devices)} devices: {would_create_devices}")
-        print(f"[dry-run] would configure NR: set-expected-tags ({len(tags)}), {ml_action}")
+        print(
+            "[dry-run] would configure NR runtime file: "
+            f"{env['nr_data_dir']}/{NR_RUNTIME_CONFIG_FILENAME} ({len(tags)} expected_tags)"
+        )
         print(f"[dry-run] would write: deploy/secrets/{client}/*.env")
         print("\nno side effects performed. run without --dry-run to apply.")
         return EXIT_OK
-    # Phase 2b: TB login
+    # Phase 2b: TB login — auto-arranca TB si no está up (salvo --no-autostart).
+    if not args.no_autostart:
+        try:
+            ensure_tb_up(env["tb_url"], env["tb_user"], env["tb_password"])
+        except ExternalError as e:
+            print(f"[✗] {e}", file=sys.stderr)
+            return EXIT_EXTERNAL
     try:
         jwt = tb_login(env["tb_url"], env["tb_user"], env["tb_password"])
     except ExternalError as e:
@@ -655,13 +750,41 @@ def main() -> int:
     except ExternalError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_EXTERNAL
-    # Phase 5: configure NR
+    # Phase 5: write secrets — debe ir ANTES de preparar NR. Los `.env` y el
+    # flows_cred.json son prerequisitos para que NR pueda arrancar vía
+    # `env_file` del compose. En un bring-up from-scratch, NR no existe aún
+    # cuando se ejecuta este script por primera vez; el orden garantiza que
+    # los artefactos queden escritos incluso si Phase 6 falla.
+    secrets_root = Path("deploy/secrets")
     try:
-        configure_nodered(env["nr_url"], manifest)
-    except ExternalError as e:
-        print(f"[✗] {e}", file=sys.stderr)
+        write_secrets(client, env["tb_url"], devices, secrets_root)
+    except OSError as e:
+        print(f"[✗] secrets: {e}", file=sys.stderr)
+        return EXIT_UNEXPECTED
+    # Phase 5b: write NR flows_cred.json (encrypts ${TB_GATEWAY_TOKEN} literal)
+    try:
+        write_nodered_cred_file(Path(env["nr_data_dir"]), env["nr_credential_secret"])
+    except OSError as e:
+        print(f"[✗] NR cred file: {e}", file=sys.stderr)
+        return EXIT_UNEXPECTED
+    # Phase 5c: write runtime config consumed by fn_main.
+    try:
+        write_nodered_runtime_config(Path(env["nr_data_dir"]), manifest)
+    except OSError as e:
+        print(f"[✗] NR runtime config: {e}", file=sys.stderr)
+        return EXIT_UNEXPECTED
+    # Phase 6: ensure NR is reachable. Con --no-autostart, mantenemos modo
+    # fail-fast si NR está down para no dar un onboarding falso-positivo.
+    if not args.no_autostart:
+        try:
+            ensure_nr_up(env["nr_url"], client)
+        except ExternalError as e:
+            print(f"[✗] {e}", file=sys.stderr)
+            return EXIT_EXTERNAL
+    elif not _nr_reachable(env["nr_url"]):
+        print(f"[✗] NR unreachable at {env['nr_url']} (--no-autostart active)", file=sys.stderr)
         return EXIT_EXTERNAL
-    # Phase 6: smoke tests
+    # Phase 7: smoke tests
     try:
         smoke_tests(env["tb_url"], jwt, devices)
     except ExternalError as e:
@@ -670,20 +793,7 @@ def main() -> int:
     except SmokeError as e:
         print(f"[✗] {e}", file=sys.stderr)
         return EXIT_SMOKE_FAILED
-    # Phase 7: write secrets
-    secrets_root = Path("deploy/secrets")
-    try:
-        write_secrets(client, env["tb_url"], devices, secrets_root)
-    except OSError as e:
-        print(f"[✗] secrets: {e}", file=sys.stderr)
-        return EXIT_UNEXPECTED
-    # Phase 7b: write NR flows_cred.json (encrypts ${TB_GATEWAY_TOKEN} literal)
-    try:
-        write_nodered_cred_file(Path(env["nr_data_dir"]), env["nr_credential_secret"])
-    except OSError as e:
-        print(f"[✗] NR cred file: {e}", file=sys.stderr)
-        return EXIT_UNEXPECTED
-    print(f"\nonboarding complete. servicios ML y blockchain-api pueden arrancar "
+    print(f"\nonboarding complete. servicios ai-advanced y blockchain pueden arrancar "
           f"(env_file apunta a deploy/secrets/{client}/).")
     return EXIT_OK
 
