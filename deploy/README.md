@@ -1,13 +1,16 @@
 # deploy/
 
-Provisioning pipeline v2 de TRUEDATA UCAM. Single-tenant, idempotente,
+Provisioning pipeline v2 de TRUEDATA. Single-tenant, idempotente,
 bring-up sin UI clicks.
 
-- `onboard_client_v2.py` — CLI monolítico. Ver §Testing Instructions.
-- `requirements.txt` — deps: `requests`, `pyyaml`, `cryptography`.
+- `onboarding/` — paquete Python modular (ver §Estructura del paquete).
+  Invocación canónica: `python3 -m deploy.onboarding --manifest <path>`.
+- `onboard_client_v2.py` — shim de compatibilidad hacia atrás; delega en
+  `deploy.onboarding.cli:main`. Mantiene funcional el comando
+  `python3 deploy/onboard_client_v2.py ...` del plan original.
 - `clients/<CLIENT>.yaml` — manifests de cliente (uno por planta).
 - `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored).
-  Tres ficheros por cliente: `ml-inference.env`, `airtrace-anchor.env`,
+  Tres ficheros por cliente: `ai-inference.env`, `blockchain-anchor.env`,
   `nodered-gateway.env`. Los dos primeros los consume el servicio externo
   correspondiente vía Docker `env_file:`. El tercero lo consume
   `truedata-nodered/docker-compose.yml` (inyecta `TB_GATEWAY_TOKEN` como env
@@ -37,39 +40,62 @@ chmod 700 deploy/secrets
 # — o aceptar que las perms no se enforcen (MVP: dev machine, no hay secretos reales)
 ```
 
-El target de la demo INCIBE es un PC embebido Linux donde `chmod 700`
+El target de la demo regulatoria es un PC embebido Linux donde `chmod 700`
 funciona. El dev machine WSL2 no necesita protección equivalente (no hay
 secretos de producción allí).
 
-## Bring-up desde máquina limpia
+## Estructura del paquete `deploy/onboarding/`
 
-```bash
-# Una sola vez en el host:
-docker network create truedata_iot_network
-
-# Levanta TB+Postgres (no necesita CLIENT):
-docker compose up -d thingsboard
-
-# Onboarding del cliente:
-export TB_ADMIN_PASSWORD=tenant
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
-
-# NR: requiere CLIENT (path del env_file). Operador lo exporta o añade al `.env` raíz.
-export CLIENT=FR_ARAGON
-cd truedata-nodered && docker compose up -d && cd ..
+```
+deploy/onboarding/
+├── __init__.py           # re-exports main(), EXIT_OK
+├── __main__.py           # `python3 -m deploy.onboarding` entrypoint
+├── cli.py                # parse_args, read_env, main() — orquestador Phases 1-7b
+├── manifest.py           # load_manifest + validación del YAML
+├── tb.py                 # REST client TB: login, profiles, devices, rotación
+├── nodered.py            # runtime_config.json + flows_cred.json (AES-256-CTR)
+├── secrets.py            # write_atomic + .env rendering + write_secrets
+├── smoke.py              # Phase 6 — smoke tests de AI/blockchain writeback
+└── docker_helpers.py     # auto-start de TB + NR via docker compose
 ```
 
-Cero pasos manuales en la NR UI.
+Una responsabilidad por módulo, sin ciclos de dependencia (todo apunta hacia
+`tb.py` y `secrets.py`). El shim `onboard_client_v2.py` preserva
+compatibilidad con invocaciones del plan original.
+
+## Bring-up desde máquina limpia (un solo comando)
+
+```bash
+# Con .env cargado (CLIENT=FR_ARAGON, TB_ADMIN_PASSWORD=tenant):
+python3 -m deploy.onboarding --manifest deploy/clients/FR_ARAGON.yaml
+# O (equivalente, vía shim):
+python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
+```
+
+El CLI orquesta todo:
+
+1. Auto-arranca TB + Postgres via `docker compose up -d thingsboard`
+   si no responden (espera hasta ~180 s).
+2. Crea/asegura profiles + devices en TB.
+3. Escribe los 3 `.env` + `flows_cred.json`.
+4. Auto-arranca NR via `docker compose up -d nodered_tb` si no
+   responde (espera ~60 s).
+5. Configura NR (expected-tags, AI URL) + smoke tests.
+6. exit 0 con `onboarding complete`.
+
+Cero pasos manuales en la NR UI, cero `docker compose` a mano. Flags
+útiles: `--force` (rota tokens), `--no-autostart` (falla fast si TB/NR
+no están up — útil en CI donde el compose ya corre aparte).
 
 ## onboard_client_v2.py — Testing Instructions
 
-Pipeline v2 de onboarding para clientes. Spec: [`docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md`](../docs/superpowers/specs/2026-04-17-onboard-client-v2-design.md).
+Pipeline v2 de onboarding para clientes.
 
 ### 1. Prerequisites
 
 - TB running: `curl -sf http://localhost:9090/login >/dev/null && echo OK`
-- NR running with v2 flow: `curl -sf http://localhost:1880/admin/get-expected-tags && echo OK`
-- Python deps: `pip install -r deploy/requirements.txt`
+- NR running with v2 flow: `curl -sfI http://localhost:1880/ >/dev/null && echo OK`
+- Python deps: `pip install -r requirements.txt` (en la raíz del repo)
 - Admin password exported:
   ```bash
   export TB_ADMIN_PASSWORD=tenant   # default TB CE
@@ -93,7 +119,7 @@ ls deploy/secrets/ 2>/dev/null || echo "no secrets dir yet (OK)"
 python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
 # Expected: exit 0, stdout ends with "onboarding complete"
 ls -la deploy/secrets/FR_ARAGON/
-# Expected: 3 files (ml-inference.env, airtrace-anchor.env, nodered-gateway.env).
+# Expected: 3 files (ai-inference.env, blockchain-anchor.env, nodered-gateway.env).
 # File-mode varía por OS/umask — ver nota "Protección de deploy/secrets/" arriba.
 ```
 
@@ -115,21 +141,20 @@ curl -s "http://localhost:9090/api/deviceProfiles?pageSize=100&page=0" \
 # Expected: contains Gateway, sensor_planta, inference_input, inference_results, blockchain_anchor (5 profiles)
 ```
 
-### 6. Verify NR state
+### 6. Verify NR runtime config
 
 ```bash
-curl -s http://localhost:1880/admin/get-expected-tags | python3 -m json.tool
-# Expected: expectedCount matches manifest (27 for FR_ARAGON)
-curl -s http://localhost:1880/admin/get-ml-url
-# Expected: matches manifest.ml_inference.url
+cat truedata-nodered/data/runtime_config.json | python3 -m json.tool
+# Expected: expected_tags matches manifest (27 for FR_ARAGON)
+#           ai_inference_url matches manifest.ai_inference.url
 ```
 
 ### 7. Force rotation
 
 ```bash
-OLD=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ml-inference.env | cut -d= -f2)
+OLD=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ai-inference.env | cut -d= -f2)
 python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml --force
-NEW=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ml-inference.env | cut -d= -f2)
+NEW=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ai-inference.env | cut -d= -f2)
 [ "$OLD" != "$NEW" ] && echo "rotated OK"
 # Expected: "rotated OK"
 
@@ -154,10 +179,10 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
 
 Docker compose directiva `env_file:`:
 ```yaml
-ml-classical:
-  env_file: ./deploy/secrets/FR_ARAGON/ml-inference.env
-blockchain-api:
-  env_file: ./deploy/secrets/FR_ARAGON/airtrace-anchor.env
+ai-advanced:
+  env_file: ./deploy/secrets/FR_ARAGON/ai-inference.env
+blockchain:
+  env_file: ./deploy/secrets/FR_ARAGON/blockchain-anchor.env
 ```
 
 Docker inyecta `TB_HOST`, `TB_DEVICE_TOKEN`, etc. como env vars del contenedor. El código del servicio compone `${TB_HOST}/api/v1/${TB_DEVICE_TOKEN}/telemetry`.
