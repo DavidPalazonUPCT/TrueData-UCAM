@@ -333,15 +333,15 @@ module.exports = {
     },
 
     /** Context Storage
-     * `default` (memory): ephemeral, per-deploy; used by everything except lastSeen.
-     * `file` (localfilesystem, flushes ~30s): survives container restarts. Used
-     * only by lastSeen (LOCF state) to avoid a warmup cycle on NR restart with
-     * recent data still within TTL. Contract: flow.get/set('lastSeen', 'file').
+     * The following property can be used to enable context storage. The configuration
+     * provided here will enable file-based context that flushes to disk every 30 seconds.
+     * Refer to the documentation for further options: https://nodered.org/docs/api/context/
      */
-    contextStorage: {
-        default: { module: "memory" },
-        file: { module: "localfilesystem" }
-    },
+    //contextStorage: {
+    //    default: {
+    //        module:"localfilesystem"
+    //    },
+    //},
 
     /** `global.keys()` returns a list of all properties set in global context.
      * This allows them to be displayed in the Context Sidebar within the editor.

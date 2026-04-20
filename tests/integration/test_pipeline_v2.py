@@ -220,28 +220,30 @@ class TestWarmup:
     """Gate LOCF pre/post warmup."""
 
     def test_W_partial_no_emit(self, nr_api: NrApi, mock_ml: MockMl):
-        """Bundle parcial (no cubre todos los expected_tags) → no emit, warmup counter sube."""
+        """Bundle parcial (no cubre todos los expected_tags) → no emit periódico.
+
+        Sin stats endpoint en el diseño simplificado: verificamos la property
+        observable (ausencia de emits al mock AI) durante varios ticks.
+        """
         nr_api.set_expected_tags(["W1_X", "W1_Y", "W1_Z"])
         nr_api.set_ai_url(mock_ml.url)
         time.sleep(0.6)
 
-        stats_before = nr_api.get_stats()
-        warmup_before = stats_before["emitCounters"]["skippedWarmup"]
-
         r = nr_api.post_ingest({"ts": now_ms(), "values": {"W1_X": 1, "W1_Y": 2}})
         assert r.status_code == 200
-        # Response no longer carries `inference` field in periodic design
+        # Response contract no longer carries the `inference` field
         assert "inference" not in r.json()
-        time.sleep(2.0)  # Wait for several ticks
+        time.sleep(2.5)  # varios ticks (interval=500ms)
 
         assert len(mock_ml.received) == 0, "warmup incompleto, no debería emitir"
-        stats_after = nr_api.get_stats()
-        assert stats_after["emitCounters"]["skippedWarmup"] > warmup_before, (
-            "skippedWarmup counter no incrementó durante warmup incompleto"
-        )
 
     def test_W_full_emits_snapshot(self, nr_api: NrApi, mock_ml: MockMl):
-        """Cubrir los 3 expected_tags con 3 POSTs → próximo tick emite snapshot."""
+        """Cubrir los 3 expected_tags con 3 POSTs → próximo tick emite snapshot.
+
+        Con emit periódico, el `ts` del frame es `Date.now()` del tick (no el
+        `ts` del último POST). Verificamos (i) sensor set, (ii) ts en rango
+        wall-clock razonable alrededor del envío.
+        """
         nr_api.set_expected_tags(["W2_X", "W2_Y", "W2_Z"])
         nr_api.set_ai_url(mock_ml.url)
         time.sleep(0.6)
@@ -255,7 +257,11 @@ class TestWarmup:
         wait_for_ml(mock_ml, 1, timeout=2.5)
 
         assert mock_ml.received[-1]["sensors"] == {"W2_X": 1, "W2_Y": 2, "W2_Z": 3}
-        assert mock_ml.received[-1]["ts"] == t + 2
+        frame_ts = mock_ml.received[-1]["ts"]
+        # ts = Date.now() del tick, debería estar cerca del envío (±5s margen)
+        assert t <= frame_ts <= now_ms() + 1000, (
+            f"frame ts={frame_ts} fuera de rango esperado [{t}, {now_ms()+1000}]"
+        )
 
 
 # ===========================================================================
@@ -276,9 +282,6 @@ class TestBlockF:
         """
         nr_api.set_expected_tags(["F2_X"])
         nr_api.set_ai_url(mock_ml.url)
-        # TTL amplio: este test usa ts en el pasado (-60s), que sumado a
-        # varios segundos de wall-clock puede superar el TTL=5s default.
-        nr_api.set_timing(ttl_ms=120000)
         time.sleep(0.6)
 
         t_base = now_ms() - 60_000  # 1 min atrás, dentro ventana

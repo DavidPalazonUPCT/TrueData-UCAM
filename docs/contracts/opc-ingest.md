@@ -238,13 +238,12 @@ como primera publicación tras:
 - Una reconexión tras caída del PLC/OPC server.
 - Una reconexión tras caída de Node-RED.
 
-**Por qué importa.** El emit periódico hacia el servicio AI (ver
-[`ai-service.md`](ai-service.md) §A10) aplica un TTL duro per-tag: si al
-reanudar operación un tag lleva más tiempo de ausencia que el TTL
-(`max_tag_staleness_ms`, default 120 s), su frame se descarta hasta el próximo
-scan completo. Un OPC Client que solo publique *deltas* (CoV) tras reconexión
-dejaría tags rezagados indefinidamente, provocando que el servicio AI se quede
-sin inferencias hasta que esos tags cambien naturalmente.
+**Por qué importa.** El emit periódico al servicio AI (ver
+[`ai-service.md`](ai-service.md) §A9) exige que todos los `EXPECTED_TAGS`
+estén presentes en el estado LOCF antes de emitir el primer frame post-restart
+(warmup gate, sin timeout). Un OPC Client que solo publique *deltas* (CoV)
+tras reconexión dejaría tags nunca-vistos indefinidamente, bloqueando el
+warmup hasta que esos tags cambien por si mismos.
 
 **Evidencia empírica** (dump FR_ARAGON, 722 h, 8 outages de 0.1 h a 508 h): el
 OPC Client actual (Neoradix) cumple la asunción — 7 de 8 outages se recuperan
@@ -253,10 +252,11 @@ ts al milisegundo). Comportamiento consistente con OPC-UA
 `CreateSubscription` → `PublishRequest` que entrega snapshot inicial de todos
 los monitored items.
 
-**Degradación segura si la asunción falla.** El pipeline no intenta mitigación
-automática: si un cliente OPC no full-escanea tras reconexión, el operador lo
-diagnostica via `GET /api/debug/stats` de NR (contador `skippedStale` creciendo
-rápido) y fuerza un refresh manual en el OPC Client.
+**Degradación si la asunción falla.** El pipeline no intenta mitigación
+automática. Un OPC Client que no full-escanee tras reconexión deja el AI en
+warmup prolongado (sin frames emitidos) hasta que los tags rezagados cambien
+por si mismos. El operador lo diagnostica por ausencia de tráfico en el device
+`ai-inference-<cliente>` y fuerza un refresh manual en el OPC Client.
 
 ---
 

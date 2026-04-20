@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 import requests
+import yaml
 from dotenv import find_dotenv, load_dotenv
 
 # Carga `.env` desde la raíz del repo antes de que pytest resuelva fixtures.
@@ -45,6 +46,34 @@ def nr_runtime_config_path() -> Path:
     """Host path bind-mounted as /data/runtime_config.json in Node-RED."""
     raw = os.environ.get("NR_RUNTIME_CONFIG_HOST_PATH", "truedata-nodered/data/runtime_config.json")
     return Path(raw).resolve()
+
+
+@pytest.fixture(scope="session")
+def client_id() -> str:
+    """Active client id. Defaults to FR_ARAGON for single-tenant dev env."""
+    return os.environ.get("CLIENT", "FR_ARAGON")
+
+
+@pytest.fixture(scope="session")
+def client_manifest(client_id: str) -> dict[str, Any]:
+    """Parsed deploy/clients/<CLIENT>.yaml. Source of truth for client config."""
+    manifest_path = Path(f"deploy/clients/{client_id}.yaml").resolve()
+    with manifest_path.open(encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+@pytest.fixture(scope="session")
+def client_expected_tags(client_manifest: dict[str, Any]) -> list[str]:
+    """Expected tags from the active client's manifest. Do not hardcode.
+
+    Any test that needs the full tag list must source it here — never inline
+    the 27-tag list in test code. The manifest YAML is the single source of
+    truth; onboarding writes it to runtime_config.json verbatim.
+    """
+    tags = client_manifest.get("sensors", {}).get("expected_tags", [])
+    if not tags:
+        raise RuntimeError(f"client manifest has empty sensors.expected_tags")
+    return list(tags)
 
 
 @pytest.fixture(scope="session")
@@ -177,25 +206,11 @@ class NrApi:
         cfg.pop("ai_inference_url", None)
         self._write_runtime_config(cfg)
 
-    def set_timing(
-        self,
-        interval_ms: int | None = None,
-        ttl_ms: int | None = None,
-        warmup_timeout_ms: int | None = None,
-    ) -> None:
+    def set_timing(self, interval_ms: int) -> None:
+        """Override inference_emit_interval_ms for the current test."""
         cfg = self._read_runtime_config()
-        if interval_ms is not None:
-            cfg["inference_emit_interval_ms"] = interval_ms
-        if ttl_ms is not None:
-            cfg["max_tag_staleness_ms"] = ttl_ms
-        if warmup_timeout_ms is not None:
-            cfg["warmup_timeout_ms"] = warmup_timeout_ms
+        cfg["inference_emit_interval_ms"] = interval_ms
         self._write_runtime_config(cfg)
-
-    def get_stats(self) -> dict[str, Any]:
-        r = requests.get(f"{self.base_url}/api/debug/stats", timeout=5)
-        r.raise_for_status()
-        return r.json()
 
 
 @pytest.fixture
@@ -264,20 +279,24 @@ def tb_client(tb_base_url: str, tb_token: str) -> TbClient:
 
 @pytest.fixture(autouse=True)
 def clean_state(nr_api: NrApi, mock_ml: MockMl):
-    """Reset per-test: clear tags/url and set fast timing so tests run in seconds.
+    """Reset per-test: clear tags/url and set fast interval so tests run fast.
 
-    With the periodic-emit design the inject heartbeat is hardcoded at 1s, so
-    effective cadence is capped at ~1 Hz even if interval_ms is lower. 500ms
-    means "emit whenever the next 1s tick fires" — i.e. ~1 emit/sec in tests.
-    TTL=5s is enough to observe boundary behaviour without waiting minutes.
+    Inject heartbeat is hardcoded at 1s; interval gate at 500 ms makes the
+    effective emit cadence ~1 Hz in tests (next 1-s tick passes the gate).
+
+    We write expected_tags=[] and sleep 1.2s to guarantee the next fn_emit
+    tick observes the config change and resets lastSeen via the sig-diff path.
+    Without this sleep, consecutive tests that use the same tag set see
+    lastSeen leak from the previous test (sig unchanged → no reset).
     """
     cfg = nr_api._read_runtime_config()
     cfg["expected_tags"] = []
     cfg.pop("ai_inference_url", None)
     cfg["inference_emit_interval_ms"] = 500
-    cfg["max_tag_staleness_ms"] = 5000
-    cfg["warmup_timeout_ms"] = 30000
+    cfg.pop("max_tag_staleness_ms", None)
+    cfg.pop("warmup_timeout_ms", None)
     nr_api._write_runtime_config(cfg)
+    time.sleep(1.2)  # let NR observe the empty-tags config and reset lastSeen
     mock_ml.reset()
     yield
 
