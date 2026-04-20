@@ -1,0 +1,64 @@
+# docker-compose.example.yml — topología multi-servicio del monorepo
+#
+# Este fichero es ILUSTRATIVO. Muestra cómo base/, ai-advanced/ y blockchain/
+# se orquestan juntos una vez que los servicios externos existan como
+# contenedores. En el monorepo TRUEDATA gitlab será el compose raíz; aquí
+# sirve como referencia para los devs de ai-advanced y blockchain.
+#
+# Requisitos de arranque:
+#   1. export CLIENT=FR_ARAGON   (o añadir al .env raíz)
+#   2. export TB_ADMIN_PASSWORD=tenant
+#   3. python3 -m deploy.onboarding --manifest deploy/clients/${CLIENT}.yaml
+#      → provisiona TB, arranca NR, escribe los 3 .env en deploy/secrets/
+#   4. docker compose -f docker-compose.example.yml up -d ai-advanced blockchain
+#
+# Ver docs/contracts/secrets-delivery.md para el contrato completo.
+
+name: truedata
+
+services:
+  # -------------------------------------------------------------------------
+  # base/ ya se arranca vía `include:` del docker-compose.yml principal.
+  # Aquí solo ilustramos los servicios EXTERNOS que consumen los .env
+  # generados por base/deploy/onboard_client_v2.py.
+  # -------------------------------------------------------------------------
+
+  ai-advanced:
+    # Imagen publicada por el equipo ai-advanced. Reemplazar con la ruta real
+    # (p. ej. registry.gitlab.com/truedata/ai-advanced:1.x).
+    image: truedata/ai-advanced:latest
+    container_name: ai-advanced
+    restart: unless-stopped
+    env_file:
+      # Resuelve a base/deploy/secrets/FR_ARAGON/ai-inference.env cuando
+      # CLIENT=FR_ARAGON. Si CLIENT no está set, docker compose falla con
+      # el mensaje explícito del `:?...`.
+      - ./deploy/secrets/${CLIENT:?CLIENT must be set (export CLIENT=<id> or add to .env)}/ai-inference.env
+    # En el monorepo gitlab — donde este fichero será el compose raíz y
+    # tendrá `include:` para base/, ai-advanced/, blockchain/ — añadir:
+    #   depends_on:
+    #     nodered_tb:    # definido en base/truedata-nodered/docker-compose.yml
+    #       condition: service_healthy
+    # Aquí se omite porque este ejemplo es auto-contenido (no tiene los
+    # sub-composes incluidos) y `docker compose config` se queja.
+    networks:
+      - truedata-net
+
+  blockchain:
+    image: truedata/blockchain:latest
+    container_name: blockchain
+    restart: unless-stopped
+    env_file:
+      - ./deploy/secrets/${CLIENT:?CLIENT must be set}/blockchain-anchor.env
+    # Mismo comentario que ai-advanced: `depends_on: nodered_tb` en el
+    # monorepo real.
+    networks:
+      - truedata-net
+
+# La red la crea el compose principal (truedata-net, driver=bridge). Aquí la
+# referenciamos como external para que ai-advanced / blockchain se unan a ella
+# sin recrearla.
+networks:
+  truedata-net:
+    external: true
+    name: truedata-net

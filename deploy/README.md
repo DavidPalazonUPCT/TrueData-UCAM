@@ -177,12 +177,13 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST \
 
 ### Consumo del `.env` por servicios downstream
 
-Docker compose directiva `env_file:`:
-```yaml
-ai-advanced:
-  env_file: ./deploy/secrets/FR_ARAGON/ai-inference.env
-blockchain:
-  env_file: ./deploy/secrets/FR_ARAGON/blockchain-anchor.env
-```
+Contrato formal: [`docs/contracts/secrets-delivery.md`](../docs/contracts/secrets-delivery.md).
+Ejemplo multi-servicio: [`docker-compose.example.yml`](../docker-compose.example.yml)
+(4-service topology: TB + NR + ai-advanced + blockchain).
 
-Docker inyecta `TB_HOST`, `TB_DEVICE_TOKEN`, etc. como env vars del contenedor. El código del servicio compone `${TB_HOST}/api/v1/${TB_DEVICE_TOKEN}/telemetry`.
+Resumen: cada servicio externo carga su `.env` vía `env_file:` en Docker
+compose; Docker inyecta `CLIENT`, `TB_HOST`, `TB_DEVICE_NAME`,
+`TB_DEVICE_TOKEN` como env vars del contenedor; el código del servicio
+compone `${TB_HOST}/api/v1/${TB_DEVICE_TOKEN}/telemetry`. El fichero
+`nodered-gateway.env` es **interno de `base/`** — los servicios
+externos no deben consumirlo.
