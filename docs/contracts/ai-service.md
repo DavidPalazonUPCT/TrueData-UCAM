@@ -504,45 +504,63 @@ Evoluciones consideradas y descartadas para el scope actual:
 
 ---
 
+## Contrato de conexión (cerrado)
+
+**Endpoint AI estándar:** `http://ai-advanced:5000/api/inference` en la
+red Docker `truedata-net`. Puerto **5000**, path `/api/inference`,
+método `POST`. Este valor es el que `deploy/clients/<CLIENT>.yaml` →
+`ai_inference.url` inyecta en NR vía `runtime_config.json`. Si un
+entorno requiere puerto/path distinto, se cambia en el manifest YAML —
+la plataforma no asume nada hardcoded más allá del default.
+
+**Fan-out a blockchain:** si la anclaje on-chain está activa para la
+planta, **el servicio AI hace push a blockchain** tras computar el
+score (fire-and-forget HTTP, patrón idéntico a NR→AI). Ver
+[`blockchain-writeback.md §Trigger`](blockchain-writeback.md#trigger--ai-hace-push-al-servicio-blockchain).
+El servicio AI lee la URL de blockchain desde su env var
+`BLOCKCHAIN_ANCHOR_URL` (típico: `http://blockchain:6000/api/anchor`),
+no es secreto y no la entrega `base/` — la configura el compose de
+`ai-advanced`. Si la env var está unset, el AI omite el push
+silenciosamente (blockchain opcional).
+
+---
+
 ## Preguntas abiertas
 
-Puntos a alinear antes de pasar a entorno compartido.
+Puntos a alinear con el equipo AI antes de pasar a entorno compartido.
 
-1. **URL del endpoint AI.** ¿Cuál será el hostname, puerto y path del endpoint
-   de inferencia? ¿Se prevé un cambio por entorno (dev/pre/prod)?
-
-2. **Campos adicionales en el body de inferencia.** ¿El modelo requiere algún
+1. **Campos adicionales en el body de inferencia.** ¿El modelo requiere algún
    campo además de `ts` y `sensors` (p.ej. `client_id`, `model_version`,
    `plant_id`)? Si es necesario, Node-RED puede añadirlos sin cambio estructural.
 
-3. **Estrategia de scans perdidos.** ¿El servicio AI implementará backfill contra
+2. **Estrategia de scans perdidos.** ¿El servicio AI implementará backfill contra
    la REST API de TB para recuperar ventanas perdidas tras un outage, o se acepta
    la pérdida y se compensa a nivel de modelo/monitorización?
 
-4. **Tolerancia a valores stale por LOCF.** ¿El modelo detecta cuando un valor
+3. **Tolerancia a valores stale por LOCF.** ¿El modelo detecta cuando un valor
    ha dejado de cambiar durante N bundles (sensor congelado o averiado)?
    Recomendación: implementar la detección de staleness descrita en §A6 para
    marcar inferencias afectadas con `status: "degraded"` en el writeback.
 
-5. **Campos adicionales en el writeback.** ¿El servicio AI querría persistir
+4. **Campos adicionales en el writeback.** ¿El servicio AI querría persistir
    explainability (SHAP values, feature importances), flags de drift, confidence
    intervals, o metadata del modelo? La plataforma acepta cualquier key adicional
    en `values` sin cambios en TB.
 
-6. **Estrategia en bundles parciales** (ver §A4 writeback). ¿Inferir siempre
+5. **Estrategia en bundles parciales** (ver §A4 writeback). ¿Inferir siempre
    (imputando) o solo en bundles completos? Decisión del equipo AI; documentar
    en su runbook.
 
-7. **Cadencia máxima de writebacks.** TB CE tiene los rate limits desactivados
+6. **Cadencia máxima de writebacks.** TB CE tiene los rate limits desactivados
    por default. Si el servicio AI quiere hacer writebacks más frecuentes que 1
    por scan (p.ej. re-inferencia tras nuevo modelo), ¿qué cadencia máxima
    prevé? La plataforma configurará rate limits acorde.
 
-8. **Observabilidad.** ¿El servicio AI expone métricas Prometheus (latencia,
+7. **Observabilidad.** ¿El servicio AI expone métricas Prometheus (latencia,
    throughput, error rate)? Si sí, la plataforma puede scrapearlas desde el
    mismo stack de monitoring que TB/NR.
 
-9. **Entornos.** ¿Dev/pre/prod tienen tokens distintos? Sí por defecto, pero
+8. **Entornos.** ¿Dev/pre/prod tienen tokens distintos? Sí por defecto, pero
    confirmar que el servicio AI soporta multi-token en su config.
 
 ---

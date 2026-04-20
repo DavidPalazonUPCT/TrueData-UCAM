@@ -1,19 +1,84 @@
-# Contrato Blockchain Writeback — `Blockchain → TB`
+# Contrato Blockchain — `AI → Blockchain → TB`
 
-Contrato HTTP entre el **servicio blockchain** (anchoring on-chain)
-y **ThingsBoard** (operado por la plataforma) para la escritura de
-evidencias de anclaje como telemetría.
+Dos contratos complementarios del servicio blockchain:
 
-Complementa a [`ai-service.md`](ai-service.md). Completa el camino de trazabilidad:
-**telemetría raw (sensor) + inferencia (score) + anclaje blockchain
-(evidencia)**, los tres indexados por el mismo `ts` del scan original.
+1. **Trigger (AI → Blockchain):** cómo recibe los scans a anclar.
+2. **Writeback (Blockchain → TB):** cómo escribe la evidencia en TB.
 
-> **Nota sobre el alcance:** el path que produce la evidencia (AI →
-> blockchain → chain) es responsabilidad del servicio blockchain y está
-> fuera del scope de la plataforma Base. Este contrato define **solo**
-> cómo el servicio blockchain escribe evidencia en TB.
+Complementa a [`ai-service.md`](ai-service.md). El pipeline completo de
+trazabilidad — telemetría raw + inferencia + anclaje blockchain — usa el
+mismo `ts` del scan original como clave de correlación en las tres capas.
 
 ---
+
+## Trigger — AI hace push al servicio blockchain
+
+**Patrón: fire-and-forget HTTP**, idéntico al NR→AI. El servicio AI
+computa el score y, si tiene la env var `BLOCKCHAIN_ANCHOR_URL` set,
+POSTea el payload al servicio blockchain en paralelo al writeback a TB.
+Si la env var está unset, el push se omite silenciosamente.
+
+```
+POST ${BLOCKCHAIN_ANCHOR_URL}     # típico: http://blockchain:6000/api/anchor
+Content-Type: application/json
+
+{
+  "ts": 1776326159190,
+  "sensors": {"POT_CCM": 300.0, ...},     // snapshot LOCF que el AI recibió
+  "score": 0.847,                          // output del modelo
+  "model_version": "anomaly-detector-v3.1.2",
+  "latency_ms": 128,
+  "status": "ok"                           // "ok" | "degraded" | "error"
+}
+```
+
+### Contrato del body
+
+| Campo | Tipo | Obligatorio | Descripción |
+|---|---|---|---|
+| `ts` | number (Unix ms) | Sí | `sourceTimestamp` del scan. Misma clave que inferencia y telemetría raw en TB |
+| `sensors` | object | Sí | Snapshot LOCF tal como lo recibió el AI (cardinalidad fija N = EXPECTED_TAGS) |
+| `score` | number | Sí | Output del modelo. Necesario para computar `payload_digest` |
+| `model_version` | string | Sí | Versión del modelo. Parte de la evidencia auditable |
+| `latency_ms` | number | No | Tiempo de inferencia. Útil para auditoría pero no va a la cadena |
+| `status` | string | No (default `"ok"`) | Si `"error"`, el blockchain puede decidir no anclar |
+
+### Semántica y fallback
+
+- **Fire-and-forget**: el AI no espera confirmación. Timeout 5 s.
+- **Response ignorada**: 2xx/4xx/5xx indistinto — el AI solo quiere
+  asegurarse de que la petición salió. Reliability la maneja el
+  servicio blockchain (queue local, retry on-chain, etc.).
+- **Resiliencia**: si el blockchain service está caído, el AI lo nota
+  por timeout o connection refused, lo loguea (`[warn] blockchain push
+  failed: <err>`) y continúa. La inferencia ya fue escrita a TB en
+  paralelo — no se pierde data raw ni score.
+- **`BLOCKCHAIN_ANCHOR_URL` unset**: el AI omite el push (blockchain
+  opcional por cliente / por entorno). Ningún warning; comportamiento
+  by-design para dev local.
+
+### Responsabilidad del servicio blockchain
+
+- **Reliability** ante fallos de cadena: queue persistente local,
+  reintento con backoff, dead-letter para evidencias no ancables.
+- **Idempotencia por `ts`**: si recibe dos pushes con el mismo `ts`
+  (p.ej. rerun del AI tras crash), debe tratar el segundo como no-op o
+  como re-anclaje explícito según su política.
+- **Fuente del digest**: puede re-leer el device `inference-input` de TB
+  para computar un `payload_digest` auditable a partir del snapshot
+  original (ver `ai-service.md §A8`), o usar directamente el `sensors`
+  del body.
+
+---
+
+> **Scope boundary:** el path `AI → blockchain → chain` y la reliability
+> interna del servicio blockchain están **fuera** del scope de la
+> plataforma `base/`. Este contrato define cómo AI invoca a blockchain
+> (arriba) y cómo blockchain escribe evidencia a TB (abajo).
+
+---
+
+## Writeback — Blockchain → TB
 
 ## Resumen del contrato
 
@@ -369,3 +434,4 @@ Puntos a alinear antes de pasar a entorno compartido.
 | Fecha | Autor | Cambio |
 |---|---|---|
 | 2026-04-16 | David Palazon / Claude | Primera versión — cierra el gap de auto-provisioning blockchain. Device + profile pre-provisionados por la plataforma; transport REST con token per-device; correlación con AI y telemetría raw vía `ts` compartido |
+| 2026-04-20 | David Palazon / Claude | Añadida sección §Trigger formalizando el push AI→Blockchain (fire-and-forget HTTP, simétrico al NR→AI). Cierra la pregunta crítica levantada por el review de docs: el servicio blockchain recibe los scans vía push del AI, no por pull de TB ni subscripción MQTT |

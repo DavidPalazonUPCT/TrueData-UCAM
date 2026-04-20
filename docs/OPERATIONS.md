@@ -326,10 +326,12 @@ python3 -m deploy.onboarding --manifest deploy/clients/${CLIENT}.yaml
 # Regenera flows_cred.json idempotentemente
 ```
 
-**OPC Client durante downtime de NR**: comportamiento undefined. Ver
-contratos `docs/contracts/opc-ingest.md` §A4 — store-and-forward es
-responsabilidad del OPC Client y **no está garantizado**. Es el mayor
-riesgo de data loss del sistema.
+**OPC Client durante downtime de NR**: comportamiento no verificado.
+Neoradix (vendor externo) puede o no implementar store-and-forward
+persistente. Ver [`opc-ingest.md §A4`](contracts/opc-ingest.md) para el
+gap operacional reconocido y el plan de test/mitigación. Mayor riesgo de
+data loss del sistema en producción continua; aceptable para la demo
+INCIBE con ventana acotada.
 
 ### 7.2 TB crashea
 
@@ -419,11 +421,13 @@ docker compose restart nodered_tb
 
 ---
 
-## Preguntas abiertas (requieren decisión)
+## Limitaciones conocidas (MVP)
 
-- **Alerting**: no hay Prometheus, no hay endpoint estructurado de health
-  por servicio. En producción real, wrap un exporter externo o monitor de
+- **Alerting**: no hay Prometheus ni endpoint estructurado de health por
+  servicio. En producción real, wrap un exporter externo o monitor de
   logs con `docker logs --tail`. No bloqueante para la demo regulatoria.
-- **Store-and-forward del OPC Client**: sin garantía (ver §7.1). Si el
-  vendor (Neoradix) no lo implementa, datapoints durante downtime de NR
-  se pierden. Pendiente de confirmar con el vendor.
+- **Store-and-forward del OPC Client (Neoradix)**: no verificado
+  empíricamente. Plan de test + mitigación en
+  [`opc-ingest.md §A4`](contracts/opc-ingest.md). Mayor riesgo de data
+  loss en producción continua. Aceptable para la demo con ventana
+  acotada.

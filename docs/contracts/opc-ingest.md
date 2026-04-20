@@ -191,6 +191,20 @@ Igualmente, una pérdida de conexión entre el servicio OPC y el PLC es
 opaca para Node-RED: se manifiesta como ausencia de POSTs. El monitoreo
 de disponibilidad del PLC vive en el servicio OPC.
 
+> **Gap operacional reconocido (pre-demo INCIBE):** el servicio OPC en
+> FR_ARAGON es un producto de terceros (Neoradix) cuyo comportamiento
+> real frente a caídas de NR no está verificado empíricamente. Puede
+> implementar o no store-and-forward persistente. Mitigaciones
+> recomendadas antes de producción:
+> 1. **Test empírico**: apagar NR 5-10 min, observar si Neoradix
+>    reintenta con `ts` originales o si pierde el intervalo.
+> 2. **Si no implementa store-and-forward**: añadir buffer file-based en
+>    NR (entrada `/api/opc-ingest` → disco → mqtt-out) como defensa en
+>    profundidad. Trabajo post-MVP.
+>
+> La demo INCIBE asume ausencia de caídas durante la ventana de
+> presentación. Para producción continua este gap tiene que cerrarse.
+
 ### A5 — Sin autenticación (decisión temporal)
 
 El endpoint `/api/opc-ingest` **no exige autenticación** hoy. Es una
