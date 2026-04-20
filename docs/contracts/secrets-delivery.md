@@ -7,7 +7,7 @@ access tokens de ThingsBoard que cada servicio necesita para escribir
 telemetría.
 
 Complementa a:
-- [`ai-writeback.md`](ai-writeback.md) §A6 — política de rotación del token AI
+- [`ai-service.md`](ai-service.md) §A6 — política de rotación del token AI
 - [`blockchain-writeback.md`](blockchain-writeback.md) §A6 — política de rotación del token blockchain
 
 Este doc formaliza el **mecanismo de entrega**; los dos anteriores
@@ -17,7 +17,7 @@ formalizan el **uso** del token ya entregado.
 
 ## 1. Resumen
 
-`base/deploy/onboard_client_v2.py` (alias `python3 -m deploy.onboarding`)
+`python3 -m deploy.onboarding` (lógica en `base/deploy/onboarding/`)
 provisiona todos los recursos en TB y emite **ficheros `.env`** con los
 tokens, uno por servicio consumidor. Los servicios externos los leen vía
 la directiva `env_file:` de Docker compose — cero glue code, cero
@@ -59,11 +59,11 @@ Todos los ficheros de `deploy/secrets/<CLIENT>/` (excepto
 vars:
 
 ```env
-# onboard_client_v2.py — generated 2026-04-20T08:39:22Z
-# DO NOT EDIT MANUALLY. Regenerate via deploy/onboard_client_v2.py.
+# deploy.onboarding — generated 2026-04-20T08:39:22Z
+# DO NOT EDIT MANUALLY. Regenerate via `python3 -m deploy.onboarding --manifest <path>`.
 # Deliver this file to the AI service team via secure channel.
 CLIENT=FR_ARAGON
-TB_HOST=http://localhost:9090
+TB_HOST=http://thingsboard:9090
 TB_DEVICE_NAME=ai-inference-FR_ARAGON
 TB_DEVICE_TOKEN=<20 chars alfanuméricos>
 ```
@@ -74,6 +74,14 @@ TB_DEVICE_TOKEN=<20 chars alfanuméricos>
 | `TB_HOST` | URL base de TB. Compón la URL de writeback como `${TB_HOST}/api/v1/${TB_DEVICE_TOKEN}/telemetry` |
 | `TB_DEVICE_NAME` | Solo debugging bilateral con la plataforma (ej. aparece en los logs de TB) |
 | `TB_DEVICE_TOKEN` | ⚠️ **Credencial**. Viaja en el path de la URL (limitación TB CE, no header). Único campo sensible |
+
+> **Sobre `TB_HOST`**: el valor escrito al `.env` proviene del env var
+> `TB_URL` del onboarding (default `http://localhost:9090`). El operador
+> debe exportar `TB_URL=http://thingsboard:9090` antes de `python3 -m
+> deploy.onboarding` cuando los servicios consumidores corran
+> containerizados en la red `truedata-net` (caso típico en producción y
+> en el monorepo gitlab). Si el servicio corre en el host para dev,
+> dejar el default. Ver §4.3.
 
 **Este contrato es estable.** Si en el futuro se añade una 5ª key (p. ej.
 `TB_DEVICE_ID`), será **additive** — no se van a renombrar ni quitar las
@@ -182,7 +190,7 @@ docker compose up -d --force-recreate ai-advanced
 ```
 
 El downtime es del orden de segundos. Notificación out-of-band (ver
-§A6 de `ai-writeback.md` / `blockchain-writeback.md`) llega con ≥24 h
+§A6 de `ai-service.md` / `blockchain-writeback.md`) llega con ≥24 h
 de antelación salvo compromiso confirmado.
 
 ---

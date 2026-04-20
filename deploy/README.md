@@ -3,11 +3,16 @@
 Provisioning pipeline v2 de TRUEDATA. Single-tenant, idempotente,
 bring-up sin UI clicks.
 
-- `onboarding/` — paquete Python modular (ver §Estructura del paquete).
-  Invocación canónica: `python3 -m deploy.onboarding --manifest <path>`.
-- `onboard_client_v2.py` — shim de compatibilidad hacia atrás; delega en
-  `deploy.onboarding.cli:main`. Mantiene funcional el comando
-  `python3 deploy/onboard_client_v2.py ...` del plan original.
+> **Bring-up, healthcheck, rotación, backup/restore** — ver el runbook
+> operacional en [`docs/OPERATIONS.md`](../docs/OPERATIONS.md). Este doc
+> cubre estructura del paquete + testing del CLI aisladamente.
+
+- `onboarding/` — paquete Python modular con la lógica completa (ver §Estructura del paquete).
+  Invocación: `python3 -m deploy.onboarding --manifest <path>`.
+- `onboard_client_v2.py` — shim fino (≈15 líneas) que delega en
+  `deploy.onboarding.cli:main`. Existe solo para que la ruta
+  `python3 deploy/onboard_client_v2.py ...` siga funcionando; toda la
+  lógica vive en `onboarding/`.
 - `clients/<CLIENT>.yaml` — manifests de cliente (uno por planta).
 - `secrets/<CLIENT>/*.env` — tokens generados en runtime (gitignored).
   Tres ficheros por cliente: `ai-inference.env`, `blockchain-anchor.env`,
@@ -60,16 +65,13 @@ deploy/onboarding/
 ```
 
 Una responsabilidad por módulo, sin ciclos de dependencia (todo apunta hacia
-`tb.py` y `secrets.py`). El shim `onboard_client_v2.py` preserva
-compatibilidad con invocaciones del plan original.
+`tb.py` y `secrets.py`).
 
 ## Bring-up desde máquina limpia (un solo comando)
 
 ```bash
 # Con .env cargado (CLIENT=FR_ARAGON, TB_ADMIN_PASSWORD=tenant):
 python3 -m deploy.onboarding --manifest deploy/clients/FR_ARAGON.yaml
-# O (equivalente, vía shim):
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
 ```
 
 El CLI orquesta todo:
@@ -83,89 +85,27 @@ El CLI orquesta todo:
 5. Configura NR (expected-tags, AI URL) + smoke tests.
 6. exit 0 con `onboarding complete`.
 
-Cero pasos manuales en la NR UI, cero `docker compose` a mano. Flags
-útiles: `--force` (rota tokens), `--no-autostart` (falla fast si TB/NR
-no están up — útil en CI donde el compose ya corre aparte).
+Cero pasos manuales en la NR UI, cero `docker compose` a mano.
 
-## onboard_client_v2.py — Testing Instructions
+### Flags útiles
 
-Pipeline v2 de onboarding para clientes.
+| Flag | Uso |
+|---|---|
+| `--dry-run` | Valida manifest + pings, no aplica cambios (ningún fichero escrito) |
+| `--force` | Rota tokens TB atómicamente y reescribe los `.env` |
+| `--no-autostart` | Falla fast si TB/NR no están up (útil en CI) |
 
-### 1. Prerequisites
+### Verificación post-onboarding
 
-- TB running: `curl -sf http://localhost:9090/login >/dev/null && echo OK`
-- NR running with v2 flow: `curl -sfI http://localhost:1880/ >/dev/null && echo OK`
-- Python deps: `pip install -r requirements.txt` (en la raíz del repo)
-- Admin password exported:
-  ```bash
-  export TB_ADMIN_PASSWORD=tenant   # default TB CE
-  ```
-
-### 2. Dry-run (no side effects)
+Las invariantes que debe dejar el CLI en TB están automatizadas en
+[`tests/integration/test_bringup_v2.py`](../tests/integration/test_bringup_v2.py):
 
 ```bash
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml --dry-run
-# Expected: exit 0, stdout shows "[dry-run] would create: ..."
+pytest tests/integration/test_bringup_v2.py -v
+# 4 tests: profiles creados, Gateway flag, writeback devices bound a profile correcto
 ```
 
-Verify no files written:
-```bash
-ls deploy/secrets/ 2>/dev/null || echo "no secrets dir yet (OK)"
-```
-
-### 3. Happy path
-
-```bash
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
-# Expected: exit 0, stdout ends with "onboarding complete"
-ls -la deploy/secrets/FR_ARAGON/
-# Expected: 3 files (ai-inference.env, blockchain-anchor.env, nodered-gateway.env).
-# File-mode varía por OS/umask — ver nota "Protección de deploy/secrets/" arriba.
-```
-
-### 4. Idempotency
-
-```bash
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml
-# Expected: exit 0, stdout shows [=] on every profile and device (no [✓] created)
-```
-
-### 5. Verify TB state
-
-```bash
-JWT=$(curl -s -X POST http://localhost:9090/api/auth/login \
-    -H "Content-Type: application/json" \
-    -d '{"username":"tenant@thingsboard.org","password":"'$TB_ADMIN_PASSWORD'"}' | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")
-curl -s "http://localhost:9090/api/deviceProfiles?pageSize=100&page=0" \
-    -H "X-Authorization: Bearer $JWT" | python3 -m json.tool | grep '"name"'
-# Expected: contains Gateway, sensor_planta, inference_input, inference_results, blockchain_anchor (5 profiles)
-```
-
-### 6. Verify NR runtime config
-
-```bash
-cat truedata-nodered/data/runtime_config.json | python3 -m json.tool
-# Expected: expected_tags matches manifest (27 for FR_ARAGON)
-#           ai_inference_url matches manifest.ai_inference.url
-```
-
-### 7. Force rotation
-
-```bash
-OLD=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ai-inference.env | cut -d= -f2)
-python3 deploy/onboard_client_v2.py --manifest deploy/clients/FR_ARAGON.yaml --force
-NEW=$(grep TB_DEVICE_TOKEN deploy/secrets/FR_ARAGON/ai-inference.env | cut -d= -f2)
-[ "$OLD" != "$NEW" ] && echo "rotated OK"
-# Expected: "rotated OK"
-
-# Verify old invalidated
-curl -s -o /dev/null -w "%{http_code}\n" -X POST \
-  "http://localhost:9090/api/v1/${OLD}/telemetry" \
-  -H "Content-Type: application/json" -d '{"ts":0,"values":{}}'
-# Expected: 401
-```
-
-### Exit codes (spec §6.4)
+### Exit codes
 
 | Code | Significado |
 |---|---|

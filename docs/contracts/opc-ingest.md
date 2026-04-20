@@ -100,7 +100,7 @@ curl -s -X POST http://localhost:1880/api/opc-ingest \
 Respuesta esperada:
 
 ```json
-{"status":"ok","tags":3}
+{"status":"ok","tags":3,"inference":"warmup(2/27)"}
 ```
 
 ---
@@ -109,7 +109,7 @@ Respuesta esperada:
 
 | Código | Cuerpo | Cuándo |
 |---|---|---|
-| `200 OK` | `{"status": "ok", "tags": <N>}` | Payload válido, parseado y publicado al broker MQTT de TB. `<N>` = número de tags recibidos |
+| `200 OK` | `{"status": "ok", "tags": <N>, "inference": "<estado>"}` | Payload válido, parseado y publicado al broker MQTT de TB. `<N>` = número de tags recibidos. `inference` es informativo: `"emitted"` \| `"warmup(M/N)"` \| `"disabled"` |
 | `400 Bad Request` | `{"status": "error", "reason": "body not valid JSON object"}` | Body ausente, no parseable como JSON, o de tipo distinto a objeto (array, primitivo) |
 | `400 Bad Request` | `{"status": "error", "reason": "ts missing or not finite number"}` | `ts` ausente, no es `typeof number`, o es `NaN`/`Infinity` |
 | `400 Bad Request` | `{"status": "error", "reason": "ts outside acceptable window (now-30d .. now+5min)"}` | `ts` fuera de la ventana aceptable (ver A6) |

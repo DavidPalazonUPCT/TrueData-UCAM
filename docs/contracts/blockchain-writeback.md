@@ -4,8 +4,7 @@ Contrato HTTP entre el **servicio blockchain** (anchoring on-chain)
 y **ThingsBoard** (operado por la plataforma) para la escritura de
 evidencias de anclaje como telemetría.
 
-Complementa a [`ai-inference.md`](ai-inference.md) y
-[`ai-writeback.md`](ai-writeback.md). Completa el camino de trazabilidad:
+Complementa a [`ai-service.md`](ai-service.md). Completa el camino de trazabilidad:
 **telemetría raw (sensor) + inferencia (score) + anclaje blockchain
 (evidencia)**, los tres indexados por el mismo `ts` del scan original.
 
@@ -181,7 +180,7 @@ fallos como ausencia de datos, no como error HTTP.
 
 ## Device + profile pre-provisionados por la plataforma
 
-El onboarding (`deploy/onboard_client_v2.py`) crea idempotentemente
+El onboarding (`python3 -m deploy.onboarding`) crea idempotentemente
 por cliente:
 
 | Entidad | Nombre | Rol |
@@ -204,7 +203,7 @@ conviene renegociar antes de integrar.
 ### A1 — `ts` es el mismo del scan original
 
 El `ts` del writeback coincide exactamente con el `sourceTimestamp`
-del scan en la planta (ver [ai-writeback.md §A1](ai-writeback.md)). La
+del scan en la planta (ver [ai-service.md §A1](ai-service.md)). La
 trazabilidad completa requiere este anclaje temporal: un query por
 `ts = T` en TB debe devolver de forma consistente:
 
@@ -292,25 +291,15 @@ de cada planta se resuelve vía dominio público + HTTPS, VPN, o túnel
 acordado por cliente. La plataforma expone TB al servicio blockchain
 mediante el mecanismo operativo acordado; el contrato no lo prescribe.
 
-### A6 — Entrega y rotación del token out-of-band
+### A6 — Entrega y rotación del token
 
-Mecanismo completo en
-[`secrets-delivery.md`](secrets-delivery.md) (único doc — aplica igual
-para AI y blockchain).
+Mecanismo completo (shape del `.env`, consumo vía Docker `env_file:`,
+política de rotación, recovery tras `401`, troubleshooting) en
+**[`secrets-delivery.md`](secrets-delivery.md)** — único doc, aplica
+igual para AI y blockchain.
 
-Resumen específico para este contrato:
-
-- Entrega vía `base/deploy/secrets/<CLIENT>/blockchain-anchor.env`
-  (shape de 4 keys: `CLIENT`, `TB_HOST`, `TB_DEVICE_NAME`,
-  `TB_DEVICE_TOKEN`). El fichero está gitignored en `base/` por
-  diseño — nunca versionado en repos.
-- Rotación vía `deploy/onboard_client_v2.py --force` por parte de la
-  plataforma, con aviso de al menos 24 h de antelación salvo compromiso
-  confirmado (caso urgente: notificación inmediata).
-- Sin grace period: el token viejo se invalida al rotar. El equipo del
-  servicio blockchain debe consumir el nuevo token antes de reanudar
-  writebacks.
-- Ante `401`, detener writebacks y alertar a la plataforma.
+Para el servicio blockchain, el fichero relevante es
+`base/deploy/secrets/<CLIENT>/blockchain-anchor.env`.
 
 ### A7 — Fallos del servicio blockchain no degradan telemetría ni inferencia
 
