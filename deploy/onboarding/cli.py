@@ -83,7 +83,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--manifest", required=True, help="Ruta al YAML del cliente")
     p.add_argument("--dry-run", action="store_true", help="Valida manifest + pings, no aplica cambios")
     p.add_argument("--force", action="store_true", help="Rota tokens de devices existentes")
-    p.add_argument("-v", "--verbose", action="store_true", help="Loggea cada request HTTP")
     p.add_argument(
         "--no-autostart",
         action="store_true",
