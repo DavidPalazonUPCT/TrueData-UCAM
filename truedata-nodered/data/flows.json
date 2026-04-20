@@ -2,9 +2,9 @@
     {
         "id": "tab_opc_v2",
         "type": "tab",
-        "label": "OPC Ingest v2 (Fase 2.2)",
+        "label": "OPC Ingest v2 (periodic emit)",
         "disabled": false,
-        "info": "Fase 2.2 - HTTP-in + function + mqtt-out + http-request ML"
+        "info": "HTTP ingest -> TB gateway event-driven. AI emit is periodic (timer) with LOCF + TTL."
     },
     {
         "id": "broker_tb",
@@ -32,12 +32,12 @@
         "id": "http_in_opc",
         "type": "http in",
         "z": "tab_opc_v2",
-        "name": "OPC Bulk Ingest",
+        "name": "POST /api/opc-ingest",
         "url": "/api/opc-ingest",
         "method": "post",
         "upload": false,
         "swaggerDoc": "",
-        "x": 130,
+        "x": 140,
         "y": 120,
         "wires": [
             [
@@ -49,9 +49,9 @@
         "id": "fn_main",
         "type": "function",
         "z": "tab_opc_v2",
-        "name": "validate+connects+telemetry+ml+ack",
-        "func": "// ============================================================\n// PASO 1: VALIDATION\n// ============================================================\nif (!msg.payload || typeof msg.payload !== \"object\" || Array.isArray(msg.payload) ||\n    Object.keys(msg.payload).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"body not valid JSON object\" };\n    return [null, null, msg];\n}\nconst ts = msg.payload.ts;\nconst values = msg.payload.values;\n\nif (typeof ts !== \"number\" || !Number.isFinite(ts)) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"ts missing or not finite number\" };\n    return [null, null, msg];\n}\n\nconst now = Date.now();\nif (ts < now - 30*24*3600*1000 || ts > now + 5*60*1000) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"ts outside acceptable window (now-30d .. now+5min)\" };\n    return [null, null, msg];\n}\n\nif (typeof values !== \"object\" || values === null || Array.isArray(values) || Object.keys(values).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"values must be non-empty object\" };\n    return [null, null, msg];\n}\n\n// ============================================================\n// LOCF: update last-seen state (BUG-3 + LIMIT-2)\n// lastSeen shape: {tag: {value, ts}}\n// ============================================================\nconst lastSeen = flow.get(\"lastSeen\") || {};\nfor (const [tag, value] of Object.entries(values)) {\n    if (value === null || value === undefined) continue;\n    const prev = lastSeen[tag];\n    if (!prev || ts >= prev.ts) {\n        lastSeen[tag] = { value: value, ts: ts };\n    }\n}\nflow.set(\"lastSeen\", lastSeen);\n\n// ============================================================\n// PASO 2a: BUILD CONNECT MESSAGES (per-sensor devices, raw path)\n// ============================================================\nconst DEVICE_PROFILE = flow.get(\"DEVICE_PROFILE\") || \"sensor_planta\";\nconst INFERENCE_DEVICE = flow.get(\"INFERENCE_DEVICE\") || \"inference-input\";\nconst INFERENCE_PROFILE = flow.get(\"INFERENCE_PROFILE\") || \"inference_input\";\nconst seen = flow.get(\"connectedDevices\") || {};\nconst connectMsgs = [];\n\nfor (const tagName of Object.keys(values)) {\n    if (!seen[tagName]) {\n        connectMsgs.push({\n            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),\n            topic: \"v1/gateway/connect\",\n            qos: 1\n        });\n        seen[tagName] = true;\n    }\n}\n\n// ============================================================\n// PASO 2b: BUILD PER-SENSOR TELEMETRY (raw, always)\n// ============================================================\nconst gatewayPayload = {};\nfor (const [tag, value] of Object.entries(values)) {\n    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }];\n}\nconst mqttMsg = {\n    payload: JSON.stringify(gatewayPayload),\n    topic: \"v1/gateway/telemetry\",\n    qos: 1\n};\n\n// ============================================================\n// PASO 3: LOCF SNAPSHOT for ML + inference-input device\n// ============================================================\nconst expectedTags = flow.get(\"EXPECTED_TAGS\");\nconst mlUrl = flow.get(\"ML_INFERENCE_URL\");\nconst inferenceMsgs = [];\nlet mlMsg = null;\nlet warmup = null;\n\nif (expectedTags && Array.isArray(expectedTags) && expectedTags.length > 0) {\n    const missing = expectedTags.filter(t => !(t in lastSeen));\n    if (missing.length === 0) {\n        const snapshot = {};\n        for (const t of expectedTags) snapshot[t] = lastSeen[t].value;\n\n        if (!seen[INFERENCE_DEVICE]) {\n            inferenceMsgs.push({\n                payload: JSON.stringify({ device: INFERENCE_DEVICE, type: INFERENCE_PROFILE }),\n                topic: \"v1/gateway/connect\",\n                qos: 1\n            });\n            seen[INFERENCE_DEVICE] = true;\n        }\n        inferenceMsgs.push({\n            payload: JSON.stringify({ [INFERENCE_DEVICE]: [{ ts: ts, values: snapshot }] }),\n            topic: \"v1/gateway/telemetry\",\n            qos: 1\n        });\n\n        if (mlUrl) {\n            mlMsg = {\n                payload: { ts: ts, sensors: snapshot },\n                url: mlUrl,\n                method: \"POST\",\n                headers: { \"Content-Type\": \"application/json\" },\n                requestTimeout: 5000\n            };\n        }\n    } else {\n        warmup = { missing: missing.length, total: expectedTags.length };\n        node.log(`LOCF warm-up: ${missing.length}/${expectedTags.length} tags missing (first: ${missing.slice(0,3).join(',')})`);\n    }\n} else if (mlUrl) {\n    mlMsg = {\n        payload: { ts: ts, sensors: values },\n        url: mlUrl,\n        method: \"POST\",\n        headers: { \"Content-Type\": \"application/json\" },\n        requestTimeout: 5000\n    };\n}\n\nflow.set(\"connectedDevices\", seen);\n\n// ============================================================\n// ACK + outputs\n// ============================================================\nmsg.statusCode = 200;\nmsg.payload = {\n    status: \"ok\",\n    tags: Object.keys(values).length,\n    inference: mlMsg ? \"emitted\" : (warmup ? `warmup(${warmup.missing}/${warmup.total})` : \"disabled\")\n};\n\nconst output1 = [...connectMsgs, mqttMsg, ...inferenceMsgs];\nreturn [output1, mlMsg, msg];\n",
-        "outputs": 3,
+        "name": "validate+locf+tb_fanout",
+        "func": "// Validate payload (structure, ts, values)\nif (!msg.payload || typeof msg.payload !== 'object' || Array.isArray(msg.payload) || Object.keys(msg.payload).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: 'error', reason: 'body not valid JSON object' };\n    return [null, msg];\n}\n\nconst ts = msg.payload.ts;\nconst values = msg.payload.values;\nif (typeof ts !== 'number' || !Number.isFinite(ts)) {\n    msg.statusCode = 400;\n    msg.payload = { status: 'error', reason: 'ts missing or not finite number' };\n    return [null, msg];\n}\n\nconst now = Date.now();\nif (ts < now - 30*24*3600*1000 || ts > now + 5*60*1000) {\n    msg.statusCode = 400;\n    msg.payload = { status: 'error', reason: 'ts outside acceptable window (now-30d .. now+5min)' };\n    return [null, msg];\n}\n\nif (typeof values !== 'object' || values === null || Array.isArray(values) || Object.keys(values).length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: 'error', reason: 'values must be non-empty object' };\n    return [null, msg];\n}\n\nconst validValues = {};\nfor (const [tag, value] of Object.entries(values)) {\n    if (value === null || value === undefined) continue;\n    validValues[tag] = value;\n}\n\nconst fs = global.get('fs');\nconst runtimeConfigPath = env.get('NR_RUNTIME_CONFIG_PATH') || '/data/runtime_config.json';\n\nfunction loadRuntimeConfig() {\n    const cached = flow.get('runtimeConfigCache') || { raw: null, config: {} };\n    if (!fs) {\n        return { config: cached.config || {}, changed: false };\n    }\n    try {\n        const raw = fs.readFileSync(runtimeConfigPath, 'utf8');\n        if (raw !== cached.raw) {\n            let parsed;\n            try {\n                parsed = JSON.parse(raw);\n            } catch (err) {\n                node.warn('runtime_config parse error: ' + err.message);\n                return { config: cached.config || {}, changed: false };\n            }\n            const cfg = {};\n            if (Array.isArray(parsed.expected_tags)) {\n                cfg.expected_tags = parsed.expected_tags.filter(t => typeof t === 'string');\n            }\n            if (typeof parsed.ai_inference_url === 'string' && parsed.ai_inference_url.trim().length > 0) {\n                cfg.ai_inference_url = parsed.ai_inference_url.trim();\n            }\n            if (typeof parsed.inference_emit_interval_ms === 'number' && Number.isFinite(parsed.inference_emit_interval_ms) && parsed.inference_emit_interval_ms > 0) {\n                cfg.inference_emit_interval_ms = parsed.inference_emit_interval_ms;\n            }\n            if (typeof parsed.max_tag_staleness_ms === 'number' && Number.isFinite(parsed.max_tag_staleness_ms) && parsed.max_tag_staleness_ms > 0) {\n                cfg.max_tag_staleness_ms = parsed.max_tag_staleness_ms;\n            }\n            if (typeof parsed.warmup_timeout_ms === 'number' && Number.isFinite(parsed.warmup_timeout_ms) && parsed.warmup_timeout_ms > 0) {\n                cfg.warmup_timeout_ms = parsed.warmup_timeout_ms;\n            }\n            flow.set('runtimeConfigCache', { raw: raw, config: cfg });\n            return { config: cfg, changed: true };\n        }\n        return { config: cached.config || {}, changed: false };\n    } catch (_err) {\n        if (cached.raw !== null) {\n            flow.set('runtimeConfigCache', { raw: null, config: {} });\n            return { config: {}, changed: true };\n        }\n        return { config: {}, changed: false };\n    }\n}\n\nconst runtimeLoad = loadRuntimeConfig();\nconst expectedTags = runtimeLoad.config.expected_tags;\n\n// Reset lastSeen only if expected_tags signature actually CHANGED (not merely\n// on first-load-after-restart where prevSig is empty because memory store was\n// cleared but lastSeen is file-persisted). Adding new unrelated config keys\n// must not force a warmup cycle either.\nif (runtimeLoad.changed) {\n    const prevSig = flow.get('prevExpectedTagsSig');  // undefined after fresh boot\n    const newSig = (expectedTags || []).slice().sort().join(',');\n    if (prevSig !== undefined && prevSig !== newSig) {\n        flow.set('lastSeen', {}, 'file');\n        flow.set('warmupTimeoutWarned', false);\n    }\n    flow.set('prevExpectedTagsSig', newSig);\n}\n\n// Update LOCF state in persisted store\nlet lastSeen = flow.get('lastSeen', 'file') || {};\nfor (const [tag, value] of Object.entries(validValues)) {\n    const prev = lastSeen[tag];\n    if (!prev || ts >= prev.ts) {\n        lastSeen[tag] = { value: value, ts: ts };\n    }\n}\nflow.set('lastSeen', lastSeen, 'file');\n\n// Fan-out to TB gateway (event-driven)\nconst DEVICE_PROFILE = flow.get('DEVICE_PROFILE') || 'sensor_planta';\nconst seen = flow.get('connectedDevices') || {};\nconst gatewayMsgs = [];\nfor (const tagName of Object.keys(validValues)) {\n    if (!seen[tagName]) {\n        gatewayMsgs.push({\n            payload: JSON.stringify({ device: tagName, type: DEVICE_PROFILE }),\n            topic: 'v1/gateway/connect',\n            qos: 1\n        });\n        seen[tagName] = true;\n    }\n}\nconst gatewayPayload = {};\nfor (const [tag, value] of Object.entries(validValues)) {\n    gatewayPayload[tag] = [{ ts: ts, values: { value: value } }];\n}\ngatewayMsgs.push({\n    payload: JSON.stringify(gatewayPayload),\n    topic: 'v1/gateway/telemetry',\n    qos: 1\n});\nflow.set('connectedDevices', seen);\n\n// HTTP response\nmsg.statusCode = 200;\nmsg.payload = { status: 'ok', tags: Object.keys(validValues).length };\nreturn [gatewayMsgs, msg];\n",
+        "outputs": 2,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
@@ -61,9 +61,6 @@
         "wires": [
             [
                 "mqtt_out_tb"
-            ],
-            [
-                "http_req_ml"
             ],
             [
                 "http_resp"
@@ -85,8 +82,66 @@
         "expiry": "",
         "broker": "broker_tb",
         "x": 700,
-        "y": 60,
+        "y": 80,
         "wires": []
+    },
+    {
+        "id": "http_resp",
+        "type": "http response",
+        "z": "tab_opc_v2",
+        "name": "Response",
+        "statusCode": "",
+        "headers": {},
+        "x": 700,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "inject_tick",
+        "type": "inject",
+        "z": "tab_opc_v2",
+        "name": "1s tick",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "2",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 130,
+        "y": 260,
+        "wires": [
+            [
+                "fn_emit_periodic"
+            ]
+        ]
+    },
+    {
+        "id": "fn_emit_periodic",
+        "type": "function",
+        "z": "tab_opc_v2",
+        "name": "periodic_emit_locf_ttl",
+        "func": "// Periodic timer-driven emit to AI. Inject fires at 1s heartbeat; we emit\n// at most once every inference_emit_interval_ms (default 60000).\n\nconst fs = global.get('fs');\nconst runtimeConfigPath = env.get('NR_RUNTIME_CONFIG_PATH') || '/data/runtime_config.json';\n\n// Reload runtime config if changed on disk (same cache fn_main uses).\nfunction loadRuntimeConfig() {\n    const cached = flow.get('runtimeConfigCache') || { raw: null, config: {} };\n    if (!fs) return cached.config || {};\n    try {\n        const raw = fs.readFileSync(runtimeConfigPath, 'utf8');\n        if (raw === cached.raw) return cached.config || {};\n        let parsed;\n        try {\n            parsed = JSON.parse(raw);\n        } catch (err) {\n            node.warn('runtime_config parse error: ' + err.message);\n            return cached.config || {};\n        }\n        const cfg = {};\n        if (Array.isArray(parsed.expected_tags)) cfg.expected_tags = parsed.expected_tags.filter(t => typeof t === 'string');\n        if (typeof parsed.ai_inference_url === 'string' && parsed.ai_inference_url.trim().length > 0) cfg.ai_inference_url = parsed.ai_inference_url.trim();\n        if (typeof parsed.inference_emit_interval_ms === 'number' && parsed.inference_emit_interval_ms > 0) cfg.inference_emit_interval_ms = parsed.inference_emit_interval_ms;\n        if (typeof parsed.max_tag_staleness_ms === 'number' && parsed.max_tag_staleness_ms > 0) cfg.max_tag_staleness_ms = parsed.max_tag_staleness_ms;\n        if (typeof parsed.warmup_timeout_ms === 'number' && parsed.warmup_timeout_ms > 0) cfg.warmup_timeout_ms = parsed.warmup_timeout_ms;\n        flow.set('runtimeConfigCache', { raw: raw, config: cfg });\n        // Propagate tag-set reset across function nodes too, but only when\n        // sig actually changed (undefined on first-load-after-restart \u2192 skip).\n        const prevSig = flow.get('prevExpectedTagsSig');\n        const newSig = (cfg.expected_tags || []).slice().sort().join(',');\n        if (prevSig !== undefined && prevSig !== newSig) {\n            flow.set('lastSeen', {}, 'file');\n            flow.set('warmupTimeoutWarned', false);\n        }\n        flow.set('prevExpectedTagsSig', newSig);\n        return cfg;\n    } catch (_err) {\n        if (cached.raw !== null) {\n            flow.set('runtimeConfigCache', { raw: null, config: {} });\n        }\n        return {};\n    }\n}\n\nconst cfg = loadRuntimeConfig();\nconst EMIT_INTERVAL = cfg.inference_emit_interval_ms || 60000;\nconst TTL = cfg.max_tag_staleness_ms || 120000;\nconst WARMUP_TIMEOUT = cfg.warmup_timeout_ms || 600000;\nconst expectedTags = cfg.expected_tags;\nconst aiUrl = cfg.ai_inference_url;\n\n// Process start reference for warmup timeout\nlet startTs = flow.get('emitProcessStartTs');\nif (!startTs) {\n    startTs = Date.now();\n    flow.set('emitProcessStartTs', startTs);\n}\n\nconst now = Date.now();\nconst lastEmitAttempt = flow.get('lastEmitAttemptTs') || 0;\nif (now - lastEmitAttempt < EMIT_INTERVAL) {\n    return null;\n}\nflow.set('lastEmitAttemptTs', now);\n\nlet counters = flow.get('emitCounters') || {\n    emitted: 0, skippedStale: 0, skippedWarmup: 0, skippedNoConfig: 0, lastEmitTs: 0\n};\n\nif (!Array.isArray(expectedTags) || expectedTags.length === 0) {\n    counters.skippedNoConfig++;\n    flow.set('emitCounters', counters);\n    return null;\n}\n\nconst lastSeen = flow.get('lastSeen', 'file') || {};\nconst missingTags = expectedTags.filter(t => !(t in lastSeen));\nif (missingTags.length > 0) {\n    counters.skippedWarmup++;\n    if ((now - startTs) > WARMUP_TIMEOUT && !flow.get('warmupTimeoutWarned')) {\n        node.warn('warmup_timeout exceeded: ' + missingTags.length + '/' + expectedTags.length + ' tags still missing: ' + missingTags.slice(0, 5).join(','));\n        flow.set('warmupTimeoutWarned', true);\n    }\n    flow.set('emitCounters', counters);\n    return null;\n}\n\nconst staleTags = expectedTags.filter(t => (now - lastSeen[t].ts) > TTL);\nif (staleTags.length > 0) {\n    counters.skippedStale++;\n    flow.set('emitCounters', counters);\n    return null;\n}\n\n// Build snapshot. ts = most recent tag ts included in the snapshot.\nconst snapshot = {};\nlet maxTs = 0;\nfor (const t of expectedTags) {\n    snapshot[t] = lastSeen[t].value;\n    if (lastSeen[t].ts > maxTs) maxTs = lastSeen[t].ts;\n}\n\n// Audit trail to TB (inference-input device)\nconst INFERENCE_DEVICE = flow.get('INFERENCE_DEVICE') || 'inference-input';\nconst INFERENCE_PROFILE = flow.get('INFERENCE_PROFILE') || 'inference_input';\nconst seen = flow.get('connectedDevices') || {};\nconst gatewayMsgs = [];\nif (!seen[INFERENCE_DEVICE]) {\n    gatewayMsgs.push({\n        payload: JSON.stringify({ device: INFERENCE_DEVICE, type: INFERENCE_PROFILE }),\n        topic: 'v1/gateway/connect',\n        qos: 1\n    });\n    seen[INFERENCE_DEVICE] = true;\n    flow.set('connectedDevices', seen);\n}\ngatewayMsgs.push({\n    payload: JSON.stringify({ [INFERENCE_DEVICE]: [{ ts: maxTs, values: snapshot }] }),\n    topic: 'v1/gateway/telemetry',\n    qos: 1\n});\n\nlet aiMsg = null;\nif (aiUrl) {\n    aiMsg = {\n        payload: { ts: maxTs, sensors: snapshot },\n        url: aiUrl,\n        method: 'POST',\n        headers: { 'Content-Type': 'application/json' },\n        requestTimeout: 5000\n    };\n}\n\ncounters.emitted++;\ncounters.lastEmitTs = now;\nflow.set('emitCounters', counters);\n\nreturn [gatewayMsgs, aiMsg];\n",
+        "outputs": 2,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 260,
+        "wires": [
+            [
+                "mqtt_out_tb"
+            ],
+            [
+                "http_req_ml"
+            ]
+        ]
     },
     {
         "id": "http_req_ml",
@@ -105,247 +160,56 @@
         "senderr": false,
         "headers": [],
         "x": 700,
-        "y": 120,
+        "y": 260,
         "wires": [
             []
         ]
     },
     {
-        "id": "http_resp",
-        "type": "http response",
-        "z": "tab_opc_v2",
-        "name": "Response",
-        "statusCode": "",
-        "headers": {},
-        "x": 700,
-        "y": 200,
-        "wires": []
-    },
-    {
-        "id": "http_in_set_url",
+        "id": "http_in_stats",
         "type": "http in",
         "z": "tab_opc_v2",
-        "name": "Admin: set ML URL",
-        "url": "/admin/set-ml-url",
-        "method": "post",
-        "upload": false,
-        "swaggerDoc": "",
-        "x": 130,
-        "y": 320,
-        "wires": [
-            [
-                "fn_set_url"
-            ]
-        ]
-    },
-    {
-        "id": "fn_set_url",
-        "type": "function",
-        "z": "tab_opc_v2",
-        "name": "set",
-        "func": "if (env.get(\"NR_ADMIN_ENABLED\") !== \"true\") {\n    msg.statusCode = 404;\n    msg.headers = {\n        \"Content-Type\": \"text/html; charset=utf-8\",\n        \"X-Content-Type-Options\": \"nosniff\"\n    };\n    msg.payload = '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n<title>Error</title>\\n</head>\\n<body>\\n<pre>Cannot ' + msg.req.method + ' ' + msg.req.url + '</pre>\\n</body>\\n</html>\\n';\n    return msg;\n}\nconst url = msg.payload && msg.payload.url;\nif (typeof url !== \"string\" || url.length === 0) {\n    msg.statusCode = 400;\n    msg.payload = { status: \"error\", reason: \"url missing\" };\n    return msg;\n}\nflow.set(\"ML_INFERENCE_URL\", url);\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", url: url };\nreturn msg;\n",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 400,
-        "y": 320,
-        "wires": [
-            [
-                "http_resp_admin"
-            ]
-        ]
-    },
-    {
-        "id": "http_in_clear_url",
-        "type": "http in",
-        "z": "tab_opc_v2",
-        "name": "Admin: clear ML URL",
-        "url": "/admin/clear-ml-url",
-        "method": "post",
-        "upload": false,
-        "swaggerDoc": "",
-        "x": 130,
-        "y": 380,
-        "wires": [
-            [
-                "fn_clear_url"
-            ]
-        ]
-    },
-    {
-        "id": "fn_clear_url",
-        "type": "function",
-        "z": "tab_opc_v2",
-        "name": "clear",
-        "func": "if (env.get(\"NR_ADMIN_ENABLED\") !== \"true\") {\n    msg.statusCode = 404;\n    msg.headers = {\n        \"Content-Type\": \"text/html; charset=utf-8\",\n        \"X-Content-Type-Options\": \"nosniff\"\n    };\n    msg.payload = '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n<title>Error</title>\\n</head>\\n<body>\\n<pre>Cannot ' + msg.req.method + ' ' + msg.req.url + '</pre>\\n</body>\\n</html>\\n';\n    return msg;\n}\nflow.set(\"ML_INFERENCE_URL\", undefined);\nmsg.statusCode = 200;\nmsg.payload = { status: \"ok\", cleared: true };\nreturn msg;\n",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 400,
-        "y": 380,
-        "wires": [
-            [
-                "http_resp_admin"
-            ]
-        ]
-    },
-    {
-        "id": "http_in_get_url",
-        "type": "http in",
-        "z": "tab_opc_v2",
-        "name": "Admin: get ML URL",
-        "url": "/admin/get-ml-url",
+        "name": "GET /api/debug/stats",
+        "url": "/api/debug/stats",
         "method": "get",
         "upload": false,
         "swaggerDoc": "",
-        "x": 130,
-        "y": 440,
+        "x": 140,
+        "y": 380,
         "wires": [
             [
-                "fn_get_url"
+                "fn_stats"
             ]
         ]
     },
     {
-        "id": "fn_get_url",
+        "id": "fn_stats",
         "type": "function",
         "z": "tab_opc_v2",
-        "name": "get",
-        "func": "if (env.get(\"NR_ADMIN_ENABLED\") !== \"true\") {\n    msg.statusCode = 404;\n    msg.headers = {\n        \"Content-Type\": \"text/html; charset=utf-8\",\n        \"X-Content-Type-Options\": \"nosniff\"\n    };\n    msg.payload = '<!DOCTYPE html>\\n<html lang=\"en\">\\n<head>\\n<meta charset=\"utf-8\">\\n<title>Error</title>\\n</head>\\n<body>\\n<pre>Cannot ' + msg.req.method + ' ' + msg.req.url + '</pre>\\n</body>\\n</html>\\n';\n    return msg;\n}\nmsg.statusCode = 200;\nmsg.payload = { ML_INFERENCE_URL: flow.get(\"ML_INFERENCE_URL\") || null };\nreturn msg;\n",
+        "name": "stats",
+        "func": "// GET /api/debug/stats \u2014 observability for emit counters + per-tag staleness\nconst counters = flow.get('emitCounters') || {\n    emitted: 0, skippedStale: 0, skippedWarmup: 0, skippedNoConfig: 0, lastEmitTs: 0\n};\nconst lastSeen = flow.get('lastSeen', 'file') || {};\nconst startTs = flow.get('emitProcessStartTs') || Date.now();\nconst now = Date.now();\n\nconst staleness = {};\nfor (const tag of Object.keys(lastSeen)) {\n    staleness[tag] = now - lastSeen[tag].ts;\n}\n\nmsg.statusCode = 200;\nmsg.headers = { 'Content-Type': 'application/json' };\nmsg.payload = {\n    emitCounters: counters,\n    lastSeenStaleness: staleness,\n    uptime_ms: now - startTs\n};\nreturn msg;\n",
         "outputs": 1,
         "noerr": 0,
         "initialize": "",
         "finalize": "",
         "libs": [],
         "x": 400,
-        "y": 440,
+        "y": 380,
         "wires": [
             [
-                "http_resp_admin"
+                "http_resp_stats"
             ]
         ]
     },
     {
-        "id": "http_resp_admin",
+        "id": "http_resp_stats",
         "type": "http response",
         "z": "tab_opc_v2",
-        "name": "Admin Response",
+        "name": "Response (stats)",
         "statusCode": "",
         "headers": {},
         "x": 700,
         "y": 380,
         "wires": []
-    },
-    {
-        "id": "http_in_set_tags",
-        "type": "http in",
-        "z": "tab_opc_v2",
-        "name": "Admin: set EXPECTED_TAGS",
-        "url": "/admin/set-expected-tags",
-        "method": "post",
-        "upload": false,
-        "swaggerDoc": "",
-        "x": 160,
-        "y": 520,
-        "wires": [
-            [
-                "fn_set_tags"
-            ]
-        ]
-    },
-    {
-        "id": "fn_set_tags",
-        "type": "function",
-        "z": "tab_opc_v2",
-        "name": "set",
-        "func": "const body = msg.payload || {};\nconst tags = body.tags;\nif (!Array.isArray(tags) || tags.some(t => typeof t !== \"string\")) {\n    msg.statusCode = 400;\n    msg.payload = { error: \"body must be {tags: [string, ...]}\" };\n    return msg;\n}\nflow.set(\"EXPECTED_TAGS\", tags);\nmsg.statusCode = 200;\nmsg.payload = { expectedTags: tags, count: tags.length };\nreturn msg;",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 440,
-        "y": 520,
-        "wires": [
-            [
-                "http_resp_admin"
-            ]
-        ]
-    },
-    {
-        "id": "http_in_clear_tags",
-        "type": "http in",
-        "z": "tab_opc_v2",
-        "name": "Admin: clear EXPECTED_TAGS",
-        "url": "/admin/clear-expected-tags",
-        "method": "post",
-        "upload": false,
-        "swaggerDoc": "",
-        "x": 160,
-        "y": 580,
-        "wires": [
-            [
-                "fn_clear_tags"
-            ]
-        ]
-    },
-    {
-        "id": "fn_clear_tags",
-        "type": "function",
-        "z": "tab_opc_v2",
-        "name": "clear",
-        "func": "flow.set(\"EXPECTED_TAGS\", undefined);\nflow.set(\"lastSeen\", undefined);\nmsg.statusCode = 200;\nmsg.payload = { cleared: [\"EXPECTED_TAGS\", \"lastSeen\"] };\nreturn msg;",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 440,
-        "y": 580,
-        "wires": [
-            [
-                "http_resp_admin"
-            ]
-        ]
-    },
-    {
-        "id": "http_in_get_tags",
-        "type": "http in",
-        "z": "tab_opc_v2",
-        "name": "Admin: get EXPECTED_TAGS",
-        "url": "/admin/get-expected-tags",
-        "method": "get",
-        "upload": false,
-        "swaggerDoc": "",
-        "x": 160,
-        "y": 640,
-        "wires": [
-            [
-                "fn_get_tags"
-            ]
-        ]
-    },
-    {
-        "id": "fn_get_tags",
-        "type": "function",
-        "z": "tab_opc_v2",
-        "name": "get",
-        "func": "const tags = flow.get(\"EXPECTED_TAGS\") || null;\nconst lastSeen = flow.get(\"lastSeen\") || {};\nconst seenCount = Object.keys(lastSeen).length;\nconst missing = tags ? tags.filter(t => !(t in lastSeen)) : null;\nmsg.statusCode = 200;\nmsg.payload = {\n    expectedTags: tags,\n    expectedCount: tags ? tags.length : 0,\n    seenCount: seenCount,\n    missing: missing,\n    warmupComplete: tags && missing && missing.length === 0\n};\nreturn msg;",
-        "outputs": 1,
-        "noerr": 0,
-        "initialize": "",
-        "finalize": "",
-        "libs": [],
-        "x": 440,
-        "y": 640,
-        "wires": [
-            [
-                "http_resp_admin"
-            ]
-        ]
     }
 ]

@@ -1,8 +1,4 @@
-"""Suite de regresión para el pipeline v2.
-
-Spec: docs/superpowers/specs/2026-04-17-v2-pipeline-reliability-fixes-design.md
-Findings: docs/architecture/FINDINGS-v2-pipeline-reliability.md
-"""
+"""Suite de regresión para el pipeline v2."""
 from __future__ import annotations
 
 import time
@@ -80,28 +76,39 @@ class TestBlockB:
     def test_B1_null_value_doesnt_contaminate_locf(
         self, nr_api: NrApi, mock_ml: MockMl
     ):
-        """LIMIT-2: values.X = null NO debe contaminar lastSeen ni snapshots."""
+        """LIMIT-2: values.X = null NO debe contaminar lastSeen ni snapshots.
+
+        Adaptado al emit periódico: POSTs espaciados 1.2s para que cada uno
+        caiga en un tick distinto. Property: ningún snapshot emitido contiene
+        null, y el estado LOCF final es el esperado (B1_X preservado tras null).
+        """
         nr_api.set_expected_tags(["B1_X", "B1_Y", "B1_Z"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
 
         t1 = now_ms()
         nr_api.post_ingest({"ts": t1, "values": {"B1_X": 1.0, "B1_Y": 2.0, "B1_Z": 3.0}})
-        wait_for_ml(mock_ml, 1)
+        time.sleep(1.2)
 
         t2 = t1 + 1000
         r = nr_api.post_ingest({"ts": t2, "values": {"B1_X": None, "B1_Y": 4.0}})
         assert r.status_code == 200
+        time.sleep(1.2)
 
         t3 = t2 + 1000
         nr_api.post_ingest({"ts": t3, "values": {"B1_Z": 5.0}})
-        wait_for_ml(mock_ml, 3)
+        time.sleep(1.5)
+
+        assert len(mock_ml.received) >= 2, (
+            f"esperados >=2 emits tras POSTs espaciados, got {len(mock_ml.received)}"
+        )
 
         for rec in mock_ml.received:
             for tag, val in rec["sensors"].items():
                 assert val is not None, f"Snapshot contenía null para {tag}: {rec}"
 
         final = mock_ml.received[-1]["sensors"]
-        assert final["B1_X"] == 1.0  # LOCF preservó el valor original
+        assert final["B1_X"] == 1.0  # LOCF preservó el valor original tras null
         assert final["B1_Y"] == 4.0  # del bundle 2
         assert final["B1_Z"] == 5.0  # del bundle 3
 
@@ -158,14 +165,15 @@ class TestBlockC:
     ):
         """Tag fuera de EXPECTED_TAGS: device TB auto-provisionado, excluido de snapshot ML."""
         nr_api.set_expected_tags(["C1_X", "C1_Y"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
 
         t1 = now_ms()
         nr_api.post_ingest({
             "ts": t1,
             "values": {"C1_X": 1, "C1_Y": 2, "C1_NUEVO": 99},
         })
-        wait_for_ml(mock_ml, 1)
+        wait_for_ml(mock_ml, 1, timeout=2.5)
 
         snapshot = mock_ml.received[-1]["sensors"]
         assert "C1_X" in snapshot
@@ -177,21 +185,31 @@ class TestBlockC:
         assert len(ts_data.get("value", [])) >= 1
 
     def test_C2_dropout_locf_holds_stale_value(self, nr_api: NrApi, mock_ml: MockMl):
-        """LIMIT-1 regresión: sensor ausente N bundles → LOCF mantiene último valor."""
+        """LIMIT-1 regresión: sensor ausente N bundles → LOCF mantiene último valor.
+
+        Adaptado al emit periódico: POSTs espaciados 1.2s. Cada emit intermedio
+        debe mantener C2_X=100 (no ha cambiado desde t_base) mientras que C2_Y
+        evoluciona. Verificamos la propiedad LOCF sobre los emits recibidos.
+        """
         nr_api.set_expected_tags(["C2_X", "C2_Y"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
 
         t_base = now_ms()
         nr_api.post_ingest({"ts": t_base, "values": {"C2_X": 100, "C2_Y": 200}})
-        wait_for_ml(mock_ml, 1)
+        time.sleep(1.2)
 
-        for i in range(1, 6):
+        for i in range(1, 4):
             nr_api.post_ingest({"ts": t_base + i * 1000, "values": {"C2_Y": 200 + i}})
-        wait_for_ml(mock_ml, 6)
+            time.sleep(1.2)
 
+        assert len(mock_ml.received) >= 3, (
+            f"esperados >=3 emits, got {len(mock_ml.received)}"
+        )
         for rec in mock_ml.received:
             assert rec["sensors"]["C2_X"] == 100, "LOCF no mantuvo el valor stale"
-        assert mock_ml.received[-1]["sensors"]["C2_Y"] == 205
+        # Último emit debe reflejar el Y más reciente (200+3=203)
+        assert mock_ml.received[-1]["sensors"]["C2_Y"] == 203
 
 
 # ===========================================================================
@@ -202,26 +220,39 @@ class TestWarmup:
     """Gate LOCF pre/post warmup."""
 
     def test_W_partial_no_emit(self, nr_api: NrApi, mock_ml: MockMl):
+        """Bundle parcial (no cubre todos los expected_tags) → no emit, warmup counter sube."""
         nr_api.set_expected_tags(["W1_X", "W1_Y", "W1_Z"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
+
+        stats_before = nr_api.get_stats()
+        warmup_before = stats_before["emitCounters"]["skippedWarmup"]
 
         r = nr_api.post_ingest({"ts": now_ms(), "values": {"W1_X": 1, "W1_Y": 2}})
         assert r.status_code == 200
-        assert "warmup" in r.json()["inference"]
-        time.sleep(0.5)
-        assert len(mock_ml.received) == 0
+        # Response no longer carries `inference` field in periodic design
+        assert "inference" not in r.json()
+        time.sleep(2.0)  # Wait for several ticks
+
+        assert len(mock_ml.received) == 0, "warmup incompleto, no debería emitir"
+        stats_after = nr_api.get_stats()
+        assert stats_after["emitCounters"]["skippedWarmup"] > warmup_before, (
+            "skippedWarmup counter no incrementó durante warmup incompleto"
+        )
 
     def test_W_full_emits_snapshot(self, nr_api: NrApi, mock_ml: MockMl):
+        """Cubrir los 3 expected_tags con 3 POSTs → próximo tick emite snapshot."""
         nr_api.set_expected_tags(["W2_X", "W2_Y", "W2_Z"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
 
         t = now_ms()
         nr_api.post_ingest({"ts": t, "values": {"W2_X": 1}})
         nr_api.post_ingest({"ts": t + 1, "values": {"W2_Y": 2}})
         r = nr_api.post_ingest({"ts": t + 2, "values": {"W2_Z": 3}})
         assert r.status_code == 200
-        assert r.json()["inference"] == "emitted"
-        wait_for_ml(mock_ml, 1)
+
+        wait_for_ml(mock_ml, 1, timeout=2.5)
 
         assert mock_ml.received[-1]["sensors"] == {"W2_X": 1, "W2_Y": 2, "W2_Z": 3}
         assert mock_ml.received[-1]["ts"] == t + 2
@@ -237,31 +268,45 @@ class TestBlockF:
     def test_F2_out_of_order_doesnt_corrupt_locf(
         self, nr_api: NrApi, mock_ml: MockMl
     ):
-        """BUG-3: bundle late (ts antiguo) NO debe sobreescribir state LOCF."""
+        """BUG-3: bundle late (ts antiguo) NO debe sobreescribir state LOCF.
+
+        Adaptado al emit periódico: POSTs espaciados 1.2s. Verificamos que el
+        valor observado en cada emit respeta el orden temporal de LOCF, no
+        el orden de llegada.
+        """
         nr_api.set_expected_tags(["F2_X"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        # TTL amplio: este test usa ts en el pasado (-60s), que sumado a
+        # varios segundos de wall-clock puede superar el TTL=5s default.
+        nr_api.set_timing(ttl_ms=120000)
+        time.sleep(0.6)
 
         t_base = now_ms() - 60_000  # 1 min atrás, dentro ventana
 
         nr_api.post_ingest({"ts": t_base, "values": {"F2_X": 100}})
-        wait_for_ml(mock_ml, 1)
+        time.sleep(1.2)
 
         nr_api.post_ingest({"ts": t_base + 1000, "values": {"F2_X": 200}})
-        wait_for_ml(mock_ml, 2)
+        time.sleep(1.2)
+        n_after_200 = len(mock_ml.received)
 
-        # Late arrival: ts anterior
+        # Late arrival: ts anterior → LOCF rechaza, lastSeen sigue en 200
         nr_api.post_ingest({"ts": t_base - 500, "values": {"F2_X": 50}})
-        wait_for_ml(mock_ml, 3)
+        time.sleep(1.2)
+        n_after_late = len(mock_ml.received)
 
         nr_api.post_ingest({"ts": t_base + 2000, "values": {"F2_X": 300}})
-        wait_for_ml(mock_ml, 4)
+        time.sleep(1.5)
 
-        # Snapshot del bundle late (índice 2): debe reflejar LOCF=200, NO 50
-        assert mock_ml.received[2]["sensors"]["F2_X"] == 200, (
-            f"BUG-3 regressed: late arrival corrompió LOCF. "
-            f"Snapshots: {[r['sensors']['F2_X'] for r in mock_ml.received]}"
-        )
-        assert mock_ml.received[3]["sensors"]["F2_X"] == 300
+        assert n_after_late > n_after_200, "no se observaron emits tras el late"
+        # Emits entre late y el bundle fresco: deben ser 200, NO 50
+        for rec in mock_ml.received[n_after_200:n_after_late]:
+            assert rec["sensors"]["F2_X"] == 200, (
+                f"BUG-3 regressed: late arrival corrompió LOCF. "
+                f"Snapshots: {[r['sensors']['F2_X'] for r in mock_ml.received]}"
+            )
+        # Último emit: 300 (fresco)
+        assert mock_ml.received[-1]["sensors"]["F2_X"] == 300
 
     def test_F3_reconnect_burst_past_ts_accepted(
         self, nr_api: NrApi, tb_client: TbClient
@@ -286,20 +331,16 @@ class TestBlockF:
         missing = expected_ts - actual_ts
         assert not missing, f"TB no persistió {len(missing)}/30 timestamps: {sorted(missing)[:5]}..."
 
+    @pytest.mark.skip(
+        reason="Semántica obsoleta: con emit periódico, 2 POSTs 20ms apart "
+        "caen en el mismo tick → 1 emit con el último LOCF. Fragmentación "
+        "fina a nivel de POST es inobservable por diseño del contrato nuevo. "
+        "Ver ai-service.md §Reglas semánticas (cadencia periódica)."
+    )
     def test_F4_fragmentation_two_bundles_two_snapshots(
         self, nr_api: NrApi, mock_ml: MockMl
     ):
-        """Regresión: bundles ts=T y T+20ms → 2 snapshots distintos a ML."""
-        nr_api.set_expected_tags(["F4_X"])
-        nr_api.set_ml_url(mock_ml.url)
-
-        t1 = now_ms()
-        nr_api.post_ingest({"ts": t1, "values": {"F4_X": 1}})
-        nr_api.post_ingest({"ts": t1 + 20, "values": {"F4_X": 2}})
-        wait_for_ml(mock_ml, 2)
-
-        assert mock_ml.received[0]["ts"] == t1
-        assert mock_ml.received[1]["ts"] == t1 + 20
+        pass
 
     @pytest.mark.parametrize(
         "ts_strategy,expected_status",
@@ -333,23 +374,35 @@ class TestBlockF:
             assert "ts outside acceptable window" in r.json()["reason"]
 
     def test_F6_sensor_fault_recovery(self, nr_api: NrApi, mock_ml: MockMl):
-        """Regresión: sensor ausente 3 bundles + vuelve → LOCF reacciona al recovery."""
+        """Sensor ausente durante varios bundles y vuelve → LOCF reacciona al recovery.
+
+        Adaptado al emit periódico: POSTs espaciados 1.2s. Property: mientras
+        F6_X no se reenvía, los emits intermedios mantienen F6_X=100 (LOCF);
+        cuando vuelve, el siguiente emit refleja el nuevo valor.
+        """
         nr_api.set_expected_tags(["F6_X", "F6_Y"])
-        nr_api.set_ml_url(mock_ml.url)
+        nr_api.set_ai_url(mock_ml.url)
+        time.sleep(0.6)
 
         t_base = now_ms()
         nr_api.post_ingest({"ts": t_base, "values": {"F6_X": 100, "F6_Y": 200}})
-        wait_for_ml(mock_ml, 1)
+        time.sleep(1.2)
 
-        for i in range(1, 4):
+        for i in range(1, 3):
             nr_api.post_ingest({"ts": t_base + i * 1000, "values": {"F6_Y": 200 + i * 10}})
-        wait_for_ml(mock_ml, 4)
+            time.sleep(1.2)
 
-        for rec in mock_ml.received[:4]:
-            assert rec["sensors"]["F6_X"] == 100
+        n_during_dropout = len(mock_ml.received)
+        assert n_during_dropout >= 2, (
+            f"esperados >=2 emits durante dropout, got {n_during_dropout}"
+        )
+        for rec in mock_ml.received:
+            assert rec["sensors"]["F6_X"] == 100, (
+                f"LOCF no mantuvo F6_X: {rec}"
+            )
 
-        nr_api.post_ingest({"ts": t_base + 4000, "values": {"F6_X": 500, "F6_Y": 240}})
-        wait_for_ml(mock_ml, 5)
+        nr_api.post_ingest({"ts": t_base + 3000, "values": {"F6_X": 500, "F6_Y": 240}})
+        time.sleep(1.5)
 
         assert mock_ml.received[-1]["sensors"]["F6_X"] == 500
         assert mock_ml.received[-1]["sensors"]["F6_Y"] == 240

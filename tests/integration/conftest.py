@@ -3,6 +3,8 @@
 Asume stack Docker up: TB en :9090, NR en :1880. El mock ML corre en el
 host en un puerto aleatorio y NR lo alcanza vía host.docker.internal
 (requiere extra_hosts en truedata-nodered/docker-compose.yml).
+La configuración de EXPECTED_TAGS y URL ML se aplica escribiendo
+`truedata-nodered/data/runtime_config.json` (bind-mounted en /data).
 """
 from __future__ import annotations
 
@@ -12,10 +14,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 import pytest
 import requests
+from dotenv import find_dotenv, load_dotenv
+
+# Carga `.env` desde la raíz del repo antes de que pytest resuelva fixtures.
+# Variables del shell ganan (load_dotenv no sobrescribe por default).
+load_dotenv(find_dotenv(usecwd=True))
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +38,13 @@ def nr_base_url() -> str:
 @pytest.fixture(scope="session")
 def tb_base_url() -> str:
     return os.environ.get("TB_URL", "http://localhost:9090")
+
+
+@pytest.fixture(scope="session")
+def nr_runtime_config_path() -> Path:
+    """Host path bind-mounted as /data/runtime_config.json in Node-RED."""
+    raw = os.environ.get("NR_RUNTIME_CONFIG_HOST_PATH", "truedata-nodered/data/runtime_config.json")
+    return Path(raw).resolve()
 
 
 @pytest.fixture(scope="session")
@@ -106,6 +121,27 @@ def mock_ml() -> MockMl:
 @dataclass
 class NrApi:
     base_url: str
+    runtime_config_path: Path
+
+    def _read_runtime_config(self) -> dict[str, Any]:
+        if not self.runtime_config_path.exists():
+            return {}
+        try:
+            parsed = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
+            return parsed if isinstance(parsed, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_runtime_config(self, config: dict[str, Any]) -> None:
+        payload = dict(config)
+        payload["_revision_ns"] = time.time_ns()
+        self.runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
+        self.runtime_config_path.write_text(
+            json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        stamp_ns = time.time_ns()
+        os.utime(self.runtime_config_path, ns=(stamp_ns, stamp_ns))
 
     def post_ingest(
         self,
@@ -122,33 +158,49 @@ class NrApi:
         return requests.post(url, data=json.dumps(body), headers=headers, timeout=5)
 
     def set_expected_tags(self, tags: list[str]) -> None:
-        r = requests.post(
-            f"{self.base_url}/admin/set-expected-tags",
-            json={"tags": tags},
-            timeout=5,
-        )
-        r.raise_for_status()
+        cfg = self._read_runtime_config()
+        cfg["expected_tags"] = tags
+        self._write_runtime_config(cfg)
 
     def clear_expected_tags(self) -> None:
-        r = requests.post(f"{self.base_url}/admin/clear-expected-tags", timeout=5)
-        r.raise_for_status()
+        cfg = self._read_runtime_config()
+        cfg["expected_tags"] = []
+        self._write_runtime_config(cfg)
 
-    def set_ml_url(self, url: str) -> None:
-        r = requests.post(
-            f"{self.base_url}/admin/set-ml-url",
-            json={"url": url},
-            timeout=5,
-        )
-        r.raise_for_status()
+    def set_ai_url(self, url: str) -> None:
+        cfg = self._read_runtime_config()
+        cfg["ai_inference_url"] = url
+        self._write_runtime_config(cfg)
 
-    def clear_ml_url(self) -> None:
-        r = requests.post(f"{self.base_url}/admin/clear-ml-url", timeout=5)
+    def clear_ai_url(self) -> None:
+        cfg = self._read_runtime_config()
+        cfg.pop("ai_inference_url", None)
+        self._write_runtime_config(cfg)
+
+    def set_timing(
+        self,
+        interval_ms: int | None = None,
+        ttl_ms: int | None = None,
+        warmup_timeout_ms: int | None = None,
+    ) -> None:
+        cfg = self._read_runtime_config()
+        if interval_ms is not None:
+            cfg["inference_emit_interval_ms"] = interval_ms
+        if ttl_ms is not None:
+            cfg["max_tag_staleness_ms"] = ttl_ms
+        if warmup_timeout_ms is not None:
+            cfg["warmup_timeout_ms"] = warmup_timeout_ms
+        self._write_runtime_config(cfg)
+
+    def get_stats(self) -> dict[str, Any]:
+        r = requests.get(f"{self.base_url}/api/debug/stats", timeout=5)
         r.raise_for_status()
+        return r.json()
 
 
 @pytest.fixture
-def nr_api(nr_base_url: str) -> NrApi:
-    return NrApi(base_url=nr_base_url)
+def nr_api(nr_base_url: str, nr_runtime_config_path: Path) -> NrApi:
+    return NrApi(base_url=nr_base_url, runtime_config_path=nr_runtime_config_path)
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +264,20 @@ def tb_client(tb_base_url: str, tb_token: str) -> TbClient:
 
 @pytest.fixture(autouse=True)
 def clean_state(nr_api: NrApi, mock_ml: MockMl):
-    nr_api.clear_expected_tags()
-    nr_api.clear_ml_url()
+    """Reset per-test: clear tags/url and set fast timing so tests run in seconds.
+
+    With the periodic-emit design the inject heartbeat is hardcoded at 1s, so
+    effective cadence is capped at ~1 Hz even if interval_ms is lower. 500ms
+    means "emit whenever the next 1s tick fires" — i.e. ~1 emit/sec in tests.
+    TTL=5s is enough to observe boundary behaviour without waiting minutes.
+    """
+    cfg = nr_api._read_runtime_config()
+    cfg["expected_tags"] = []
+    cfg.pop("ai_inference_url", None)
+    cfg["inference_emit_interval_ms"] = 500
+    cfg["max_tag_staleness_ms"] = 5000
+    cfg["warmup_timeout_ms"] = 30000
+    nr_api._write_runtime_config(cfg)
     mock_ml.reset()
     yield
 

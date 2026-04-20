@@ -68,52 +68,52 @@ relevante es que coincida con lo configurado en Node-RED.
 
 | Campo | Tipo | Descripción |
 |---|---|---|
-| `ts` | number (Unix ms) | `sourceTimestamp` del bundle OPC-UA que disparó esta inferencia. Idéntico al `ts` persistido en TB — sirve como clave natural para correlacionar inferencia con telemetría raw e inference-input snapshot |
+| `ts` | number (Unix ms) | `sourceTimestamp` del scan OPC-UA más reciente incluido en el snapshot. Idéntico al `ts` que ese scan tiene persistido en TB raw — sirve como clave natural para correlacionar inferencia con telemetría raw e inference-input snapshot |
 | `sensors` | object | Diccionario `{tag_name: value}` con **cardinalidad fija N** = `EXPECTED_TAGS` configurados en NR (27 para FR_ARAGON; futuros clientes pueden tener otro N). Construido por Node-RED vía **carry-forward** sobre el estado `lastSeen` |
-| `sensors.<tag>` | number \| boolean \| string | Valor del sensor. Puede ser el valor "fresco" del bundle actual, o un valor carry-forward del último bundle en el que ese tag apareció |
+| `sensors.<tag>` | number \| boolean \| string | Valor del sensor. Puede ser el valor "fresco" del scan más reciente, o un valor carry-forward (LOCF) del último scan en el que ese tag apareció — siempre dentro del TTL (ver §A9) |
 
 ### Reglas semánticas
 
-- **Cadencia event-driven, no wall-clock.** Cada bundle OPC-UA entrante
-  (post warm-up) dispara un POST al servicio AI. Cadencia típica **≥34 s**
-  cuando el pipeline recibe full scans; puede ser sub-segundo cuando llegan
-  **CoV events** (Change-of-Value — notificaciones OPC-UA aisladas para tags de
-  alta frecuencia como el watchdog `Heart_Bit` o analógicos sin deadband
-  configurado). El servicio AI debe tolerar ritmos irregulares.
+- **Cadencia periódica wall-clock**, desacoplada del patrón de publicación OPC.
+  NR emite al servicio AI **cada `inference_emit_interval_ms`** (default `60000`
+  ms; configurable en `runtime_config.json`). El servicio AI ve un ritmo
+  constante independiente de si el PLC acaba de publicar un full scan o un CoV
+  parcial. Esta decisión elimina el aliasing temporal del diseño event-driven
+  anterior y desacopla el batch rate del modelo del ciclo del PLC. Justificación
+  en mediciones sobre FR_ARAGON (722h, 24k scans): T=60 s minimiza redundancia
+  (L2-distance entre frames consecutivos en régimen ≥ 2.0 z-scored, duplicados
+  exactos < 11%).
 - **Cardinalidad fija `|sensors| = N`.** `N = |EXPECTED_TAGS|` por cliente.
-  Nunca varía. Si el bundle entrante tiene menos tags, los que falten se
-  rellenan con su valor más reciente conocido (LOCF). Si el bundle trae tags
+  Nunca varía. Los tags que no aparezcan en el último scan se rellenan con su
+  valor LOCF mientras estén frescos (ver §A9). Si el bundle trae tags
   adicionales (nuevos sensores en campo), NR los persiste en TB raw pero
   **no los añade al payload AI** — requieren rebootstrap del modelo con nuevo
   `EXPECTED_TAGS`.
 - **Los nombres de tags son literales del PLC** (no normalizados).
-- **Warm-up gate.** Tras un restart de NR, el primer POST a AI se emite **solo
-  cuando todos los N tags de `EXPECTED_TAGS` han aparecido al menos una vez en
-  algún bundle**. Antes, NR no postea a AI (el raw path sí funciona). Ver §A7.
+- **Warm-up gate.** Tras un arranque en frío (sin `lastSeen` persistido), NR no
+  emite a AI hasta que todos los N tags de `EXPECTED_TAGS` hayan aparecido al
+  menos una vez en algún scan entrante. Duración típica: el primer full scan
+  post-arranque (~34 s en FR_ARAGON). Ver §A7. Si `lastSeen` persiste entre
+  restarts (context-store file) y los tags siguen dentro de TTL, **no hay
+  warmup**.
+- **TTL duro.** Si al evaluar el timer tick algún tag supera su TTL
+  (`max_tag_staleness_ms`, default 120000 ms), NR **omite el frame completo**.
+  Sin frame parcial, sin freshness vector. Ver §A9.
 
 #### Garantías sobre el campo `sensors`
 
 - **Nunca contiene `null` ni `undefined`.** NR filtra valores nulos al
   actualizar su state LOCF; el snapshot siempre trae valores reales del último
-  bundle válido por tag.
+  scan válido por tag.
 - **Contiene exactamente los tags de `EXPECTED_TAGS`.** Tags fuera del set no
   entran al snapshot (sí persisten en TB raw por separado).
-- **El `ts` del snapshot corresponde al `ts` del bundle que disparó la
-  inferencia**, no al instante de envío. Los valores de tags que no llegaron en
-  ese bundle vienen por carry-forward (LOCF) del último bundle válido por tag.
-
-#### Detección de sensor dropout (stale LOCF)
-
-NR no implementa timers de stale ni alarmas de sensor caído. Si un sensor
-dejara de emitir (avería persistente), el snapshot seguirá recibiendo su último
-valor conocido indefinidamente vía LOCF — limitación consciente del diseño: NR
-aporta cardinalidad fija sin estado temporal de frescura.
-
-**Responsabilidad del servicio AI:** comparar el `ts` del snapshot entrante
-contra el `ts` del último punto de cada sensor individual en TB raw
-(`GET /api/plugins/telemetry/DEVICE/{sensor}/values/timeseries`). Si el gap es
-mayor que N ventanas operativas, emitir `status: "degraded"` en el writeback
-(ver §Reglas semánticas en Parte 2).
+- **Todos los valores son *frescos* según TTL.** No hay valores-fantasma: si
+  cualquier tag supera `max_tag_staleness_ms`, NR omite el frame. El modelo
+  nunca ve un valor con staleness > TTL.
+- **El `ts` del snapshot corresponde al `ts` del scan más reciente incluido**,
+  no al instante de envío del POST. Los valores de tags que no llegaron en ese
+  scan vienen por carry-forward (LOCF) del último scan válido por tag — pero
+  todos los carry-forwards están dentro de TTL.
 
 #### Estabilidad del tipo de valor
 
@@ -142,14 +142,14 @@ curl -s -X POST http://localhost:5000/api/inference \
 
 ### Comportamiento de Node-RED hacia el servicio AI
 
-Node-RED actúa como **disparador**, no como consumidor del resultado:
+Node-RED actúa como **disparador periódico**, no como consumidor del resultado:
 
 | Aspecto | Comportamiento |
 |---|---|
 | Procesamiento de la respuesta | NR **descarta** el body y el código. Cualquier 2xx/4xx/5xx se loguea para observabilidad y se ignora funcionalmente |
-| Timeout | **5000 ms**. Si el servicio AI no responde en 5 s, NR cancela la conexión. El siguiente scan llega ~34 s después |
-| Reintentos | Ninguno. Un POST fallido (timeout, error de red, 5xx) no se reenvía |
-| Concurrencia | Un POST por scan; NR no encola ni buffera si el servicio AI se cuelga |
+| Timeout | **5000 ms**. Si el servicio AI no responde en 5 s, NR cancela la conexión. El siguiente tick llega `inference_emit_interval_ms` después (default 60 s) |
+| Reintentos | Ninguno. Un POST fallido (timeout, error de red, 5xx) no se reenvía. El siguiente tick construye un frame fresco desde LOCF |
+| Concurrencia | Máximo un POST in-flight; el siguiente tick dispara otra petición independientemente del estado de la anterior |
 
 El término "fire-and-forget" aplica en su sentido estricto: NR dispara el POST y
 **no procesa la respuesta**. El único comportamiento síncrono es el timeout de 5 s.
@@ -375,18 +375,20 @@ POST de `/api/inference`. Esto permite:
 No usar `Date.now()` ni ningún otro reloj del servicio AI — rompe la
 correlación con la telemetría raw y anula la idempotencia.
 
-### A2 — Cadencia bimodal y timeouts
+### A2 — Cadencia periódica y timeouts
 
-Cadencia típica **≥34 s** con full scans del PLC; puede ser sub-segundo cuando
-llegan CoV events (Change-of-Value — notificaciones OPC-UA aisladas para tags de
-alta frecuencia). El servicio AI debe tolerar ritmos irregulares.
+Cadencia **constante** al servicio AI: un POST cada `inference_emit_interval_ms`
+(default `60000` ms). El servicio AI recibe tráfico regular independientemente
+del patrón bimodal del OPC Client aguas arriba (full scans + CoV events), que
+NR desacopla mediante LOCF event-driven hacia TB y emit periódico hacia AI.
 
 Si la inferencia tarda más de 5 s, la arquitectura correcta es **aceptar el
 POST rápido (`202 Accepted` o similar) y procesar en background**. Mantener la
-conexión abierta más de 5 s provoca timeout en NR y el scan se considera perdido
-para inferencia.
+conexión abierta más de 5 s provoca timeout en NR y el frame se considera
+perdido para inferencia en tiempo real (el frame siguiente llega ~60 s después
+con un snapshot fresco).
 
-Si el modelo soporta inferencia batch (varios scans en una sola operación), el
+Si el modelo soporta inferencia batch (varios frames en una sola operación), el
 servicio AI debe desempaquetar el batch en N writebacks separados, uno por `ts`.
 No se acepta un array de scores bajo un único `ts`.
 
@@ -433,24 +435,35 @@ servicio AI debe detener writebacks y alertar a la plataforma — probable
 rotación no anunciada o token corrupto. Procedimiento completo en
 [`secrets-delivery.md`](secrets-delivery.md).
 
-### A7 — Fallo del AI no degrada telemetría raw
+### A7 — Warmup, timeout y fallo aislado del AI
 
-Los caminos NR→TB (telemetría) y NR→AI→TB (inferencia) son independientes. Si
-el servicio AI cae, la telemetría raw sigue llegando a TB sin interrupción. Los
-scores correspondientes a los scans mientras AI está caído simplemente no
-aparecen en el device `ai-inference-<cliente>`.
+Los caminos NR→TB (telemetría event-driven) y NR→AI (inferencia periódica) son
+independientes. Si el servicio AI cae, la telemetría raw sigue llegando a TB sin
+interrupción. Los frames correspondientes a los ticks mientras AI está caído
+simplemente no aparecen en el device `ai-inference-<cliente>`.
 
-Tras un restart de NR, el estado `lastSeen` está vacío. NR **no postea a AI**
-hasta que todos los N tags de `EXPECTED_TAGS` hayan aparecido al menos una vez
-en algún bundle (warm-up gate). Mientras tanto, los bundles parciales se
-persisten normalmente en TB raw; el HTTP response de NR incluye
-`"inference": "warmup(X/N)"`. Duración típica tras restart: 1 bundle full scan
-(~34 s).
+**Warmup gate.** NR no emite a AI hasta que todos los N tags de `EXPECTED_TAGS`
+hayan aparecido al menos una vez en algún scan entrante. Durante warmup, los
+ticks se contabilizan en `emitCounters.skippedWarmup` (observabilidad vía
+`GET /api/debug/stats`).
+
+**Warmup timeout.** Si tras `warmup_timeout_ms` (default `600000` ms = 10 min)
+aún hay tags sin aparecer, NR loguea un `node.warn` con la lista de tags
+faltantes (máx. 5 primeros). Se emite una sola vez hasta el siguiente reset.
+Esto protege contra errores de configuración silenciosos (typo en
+`EXPECTED_TAGS`, tag renombrado en el PLC).
+
+**Persistencia de `lastSeen`.** El estado LOCF se almacena en el context-store
+`file` (localfilesystem) — ver `settings.js`. Tras un restart de NR, si los
+valores persistidos siguen dentro del TTL (`max_tag_staleness_ms`), el primer
+tick posterior emite frame válido sin warmup. Si el restart excede TTL, el
+primer tick detecta stale y espera al siguiente scan completo del OPC Client.
 
 **Caso URL de AI sin configurar:** si `ai_inference_url` no está seteado en
-`runtime_config.json`, NR omite silenciosamente la salida 2. TB sigue
-recibiendo telemetría raw; el ACK al servicio OPC incluye
-`"inference": "disabled"` para que sea observable.
+`runtime_config.json`, NR construye igualmente el frame (y lo publica en
+`inference-input` para auditoría) pero **omite la petición HTTP al AI**. Los
+ticks se contabilizan en `emitCounters.emitted` como si hubiera emit real —
+observable por ausencia de tráfico al endpoint AI.
 
 ### A8 — `inference-input` device: audit trail del snapshot LOCF
 
@@ -466,7 +479,52 @@ necesita hacer nada con este device, pero:
 - **Debug:** si el score es anómalo, mirar `inference-input` muestra el input
   exacto del modelo en vez de reconstruirlo desde N devices raw.
 
-### A9 — Alarmas por inferencia (alarm_level / alarm_message)
+### A9 — TTL por tag (stale detection duro)
+
+NR descarta el frame completo si cualquier tag de `EXPECTED_TAGS` tiene
+`now - lastSeen[tag].ts > max_tag_staleness_ms`. Justificación:
+
+- **Cardinalidad N estricta del input del modelo.** No podemos emitir un frame
+  con menos de N sensores sin romper el `input_dim` del modelo temporal.
+- **No inyectamos valores fantasma.** LOCF sin TTL propaga el último valor
+  conocido aunque el sensor lleve horas muerto. Con TTL, el modelo nunca ve
+  un valor stale por encima del umbral operacional.
+- **Alternativa descartada (freshness vector):** emitir siempre acompañando
+  `fresh[tag] ∈ {0, 1}` permite al modelo ponderar. Queda documentada en
+  §Evolución — no implementada en MVP.
+
+**Valor por defecto `120000` ms = 120 s**: justificado por el max gap observado
+en el dump FR_ARAGON (722h, excluyendo outages): 67.4 s. TTL = 1.8 × max_gap
+cubre jitter operativo sin permitir valores legítimamente stale durante
+operación normal. Ajustable en `runtime_config.json` per-cliente si su cadencia
+OPC es distinta.
+
+Los ticks con stale se contabilizan en `emitCounters.skippedStale` (accesible
+vía `GET /api/debug/stats`). En régimen estable este contador debería crecer
+muy lentamente (minutos entre incrementos); un crecimiento rápido señala OPC
+Client desconectado o PLC en mal estado.
+
+### A10 — Full-scan garantizado tras reconexión (asunción OPC Client)
+
+El pipeline asume que **el OPC Client emite un scan completo con todos los tags
+como primera publicación tras una reconexión o al arranque**. Esta asunción
+permite al pipeline recuperarse sin blackouts prolongados: todos los tags se
+refrescan en un solo evento y el siguiente tick emite frame válido.
+
+**Evidencia empírica:** de los 8 outages detectados en el dump FR_ARAGON
+(duración 0.1h a 508h), 7 se recuperan con cardinalidad 27 en el primer scan,
+y el octavo en el segundo scan (ambos con timestamp idéntico al milisegundo).
+Comportamiento consistente con OPC-UA `CreateSubscription` → `PublishRequest`
+que entrega snapshot inicial de todos los monitored items.
+
+**Degradación segura si la asunción falla:** si un cliente OPC no reenvía
+full-scan y solo publica CoV events tras reconexión, el pipeline entra en
+régimen "skip stale" hasta que algún scan completo refresque los tags
+rezagados. Los ticks se contabilizan en `skippedStale`; el operador puede
+diagnosticar vía `/api/debug/stats` y forzar un refresh manual en el OPC
+Client si es necesario. El pipeline no intenta mitigación automática.
+
+### A11 — Alarmas por inferencia (alarm_level / alarm_message)
 
 El servicio AI es quien **decide cuándo el score indica una situación de alarma**
 y lo señaliza en su writeback a TB mediante los campos `alarm_level` (0-3) y
@@ -484,23 +542,29 @@ NR ignora estos campos — su responsabilidad termina al postear el snapshot al 
 
 ## Evolución posible (no implementado)
 
-La implementación actual es **LOCF ligero, event-driven**. El trade-off principal
-es que un sensor averiado propaga su último valor indefinidamente — ver la nota
-en §Detección de sensor dropout (stale LOCF) sobre la responsabilidad compartida
-con el servicio AI.
+La implementación actual es **LOCF + TTL duro + emit periódico** (T=60 s,
+TTL=120 s, warmup_timeout=600 s en defaults FR_ARAGON). Trade-offs conscientes
+y evoluciones consideradas:
 
-Evoluciones consideradas y descartadas para el scope actual:
-
-- **Snapshot builder con ventanas temporales fijas** (cadencia wall-clock, stale
-  counters, null-out tras K ventanas sin update). Aporta robustez frente a
-  dropouts pero introduce estado persistido y complejidad operativa en NR. Se
-  revisitará si el LIMIT-1 causa impacto operativo real en producción.
-- **Staleness detection en NR** (flag `stale: true` por tag en el payload). Más
-  simple que el snapshot builder pero requiere schema adicional en el contrato.
+- **Freshness vector per-tag (`fresh: {tag: age_ms}`).** En vez de TTL duro
+  (skip frame completo), emitir siempre el frame junto con un vector de edad
+  por tag; el modelo decide cómo ponderar. Más expresivo que skip binario pero
+  requiere cambiar el contrato `/api/inference` y potencialmente reentrenar.
   Pendiente si el equipo AI lo solicita.
-- **Rate limiting a 1 inferencia por ciclo PLC** (ignorar CoV events). Limpia
-  la cadencia pero pierde detalle temporal. Alternativa: implementar en AI con
-  dedup por ventana.
+- **TTL per-tag** (en lugar de global). Útil si en clientes futuros aparecen
+  sensores legítimamente lentos (p.ej. estado de válvula que cambia cada hora)
+  junto a sensores rápidos (flujo/presión). Implementación trivial: cambiar
+  `max_tag_staleness_ms` a un objeto `{tag: ms}` con fallback global. No se
+  implementa en FR_ARAGON porque todos sus 27 tags tienen la misma cadencia
+  empírica (p99=34.4 s).
+- **Ring buffer `seq_in_len` en NR** (entregar `(N, num_sensors)` al modelo).
+  Desplazaría la responsabilidad de la cola temporal del AI a NR. Descartado:
+  rompe el push-model stateless de la IA y añade state pesado (persistente) a
+  NR. El servicio AI es el owner natural de su cola temporal.
+- **Aggregation opcional (mean/median sobre ventana ≥ ciclo PLC).** Mimetiza
+  el ETL del diseño original FlowGuardInference. Irrelevante para FR_ARAGON
+  (cadencia 34 s, ventanas sub-ciclo son degeneradas). Se revisitará si
+  algún cliente futuro tiene OPC sub-segundo donde smoothing aporte.
 
 ---
 
@@ -513,15 +577,17 @@ método `POST`. Este valor es el que `deploy/clients/<CLIENT>.yaml` →
 entorno requiere puerto/path distinto, se cambia en el manifest YAML —
 la plataforma no asume nada hardcoded más allá del default.
 
-**Fan-out a blockchain:** si la anclaje on-chain está activa para la
-planta, **el servicio AI hace push a blockchain** tras computar el
-score (fire-and-forget HTTP, patrón idéntico a NR→AI). Ver
-[`blockchain-writeback.md §Trigger`](blockchain-writeback.md#trigger--ai-hace-push-al-servicio-blockchain).
-El servicio AI lee la URL de blockchain desde su env var
-`BLOCKCHAIN_ANCHOR_URL` (típico: `http://blockchain:6000/api/anchor`),
-no es secreto y no la entrega `base/` — la configura el compose de
-`ai-advanced`. Si la env var está unset, el AI omite el push
-silenciosamente (blockchain opcional).
+**Fan-out a blockchain (roadmap, no implementado):** si la anclaje
+on-chain se activa para la planta, el patrón propuesto es que el
+**servicio AI haga push a blockchain** tras computar el score
+(fire-and-forget HTTP, patrón idéntico a NR→AI). Ver
+[`blockchain-writeback.md §Trigger`](blockchain-writeback.md#trigger--ai-hace-push-al-servicio-blockchain)
+— marcado como recomendación futura, no implementado por `base/` en
+el pipeline actual. Cuando se implemente, el servicio AI leerá la URL
+desde su env var `BLOCKCHAIN_ANCHOR_URL` (típico:
+`http://blockchain:6000/api/anchor`), no es secreto y no la entrega
+`base/`. Si la env var está unset, el AI omite el push silenciosamente
+(blockchain opcional).
 
 ---
 
@@ -537,10 +603,11 @@ Puntos a alinear con el equipo AI antes de pasar a entorno compartido.
    la REST API de TB para recuperar ventanas perdidas tras un outage, o se acepta
    la pérdida y se compensa a nivel de modelo/monitorización?
 
-3. **Tolerancia a valores stale por LOCF.** ¿El modelo detecta cuando un valor
-   ha dejado de cambiar durante N bundles (sensor congelado o averiado)?
-   Recomendación: implementar la detección de staleness descrita en §A6 para
-   marcar inferencias afectadas con `status: "degraded"` en el writeback.
+3. ~~**Tolerancia a valores stale por LOCF.**~~ **Resuelta**: NR implementa TTL
+   duro (§A9) con default 120 s. El modelo nunca ve valores con staleness
+   superior al umbral configurado. Si el equipo AI necesita expresar
+   "degraded" ante staleness por debajo del umbral, puede consultar TB raw
+   para los ts individuales de cada sensor (patrón del diseño original).
 
 4. **Campos adicionales en el writeback.** ¿El servicio AI querría persistir
    explainability (SHAP values, feature importances), flags de drift, confidence
@@ -573,3 +640,4 @@ Puntos a alinear con el equipo AI antes de pasar a entorno compartido.
 | 2026-04-16 | David Palazon / Claude | Primera versión de `ai-writeback.md` — cierra pregunta abierta 3 de inferencia. Device + profile pre-provisionados; transport REST con token per-device |
 | 2026-04-17 | David Palazon / Claude | Rediseño para LOCF: `sensors` cardinalidad fija N vía carry-forward; asunciones A6/A7/A8 (LOCF mecánica, warm-up post-arranque, inference-input como audit trail); pregunta abierta sobre staleness; §Evolución posible documenta trade-offs descartados |
 | 2026-04-19 | David Palazon / Claude | Fusión de `ai-inference.md` + `ai-writeback.md` en `ai-service.md` — un único doc cubre el ciclo completo del servicio AI |
+| 2026-04-20 | David Palazon / Claude | Rediseño de cadencia AI: de **event-driven** a **periódica** (emit cada `inference_emit_interval_ms`=60 s default). Añadido TTL duro per-frame (§A9, `max_tag_staleness_ms`=120 s default). Warmup timeout explícito (§A7). Asunción formal de full-scan post-reconexión (§A10). `lastSeen` persistido en context-store file para evitar warmup en restart. Observabilidad vía `GET /api/debug/stats`. Justificación con mediciones sobre dump FR_ARAGON (722h). Pregunta abierta 3 (staleness) resuelta. |

@@ -41,7 +41,7 @@ module.exports = {
      * node-red from being able to decrypt your existing credentials and they will be
      * lost.
      */
-    credentialSecret: "airtrace",
+    credentialSecret: "platform",
 
     /** By default, the flow JSON will be formatted over multiple lines making
      * it easier to compare changes when using version control.
@@ -77,7 +77,7 @@ module.exports = {
         type: "credentials",
         users: [{
             username: "tenant",
-            password: "$2b$08$yEVqU87BxV5xTzwb9yokb.eEW0OKyWuUiyFBAfaC/DfPDCakgCINm",
+            password: "$2a$08$ggyn8L0mZ.uTsHtfsnCjW.RrUT4kAP5nL5LRYTWn5z2PLBTsi3x3K",
             permissions: "*"
         }]
     },
@@ -333,15 +333,15 @@ module.exports = {
     },
 
     /** Context Storage
-     * The following property can be used to enable context storage. The configuration
-     * provided here will enable file-based context that flushes to disk every 30 seconds.
-     * Refer to the documentation for further options: https://nodered.org/docs/api/context/
+     * `default` (memory): ephemeral, per-deploy; used by everything except lastSeen.
+     * `file` (localfilesystem, flushes ~30s): survives container restarts. Used
+     * only by lastSeen (LOCF state) to avoid a warmup cycle on NR restart with
+     * recent data still within TTL. Contract: flow.get/set('lastSeen', 'file').
      */
-    //contextStorage: {
-    //    default: {
-    //        module:"localfilesystem"
-    //    },
-    //},
+    contextStorage: {
+        default: { module: "memory" },
+        file: { module: "localfilesystem" }
+    },
 
     /** `global.keys()` returns a list of all properties set in global context.
      * This allows them to be displayed in the Context Sidebar within the editor.
@@ -510,7 +510,7 @@ module.exports = {
      *    global.get("os")
      */
     functionGlobalContext: {
-        // os:require('os'),
+        fs: require("fs"),
     },
 
     /** The maximum number of messages nodes will buffer internally as part of their
